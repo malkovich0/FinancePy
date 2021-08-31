@@ -24,25 +24,40 @@ class Finance():
 
         # TEST 용 변수들
         self.listYears = [2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020]
-        self.caseFactors = [{'val': ['PBR', 'PER', 'PCR'], 'qual': ['GP/A'], 'mom': ['Discrete'], 'size': ['Cap'], 'vol': [],'quarter': True}]
+        self.caseFactors = {'val': ['PBR', 'PER', 'PCR'], 'qual': ['GP/A'], 'mom': ['Discrete'], 'size': ['Cap'], 'vol': [],'quarter': True,'partial':False}
         self.caseName = ['withMomentumYear']
-        self.dictCaseStudy = {}
+        # self.dictCaseStudy = {}
         self.methodStockWeight = 'momentum_score_defensive'
-        # print("methodStockWeight : ['equal','ma','momentum_score_active','momentum_score_defensive','keeping_momentum']")
 
-    #
+        # make_stock_list_by_finance 변수
+        self.limitOfMarketCapitalization = 10000000000 # 백억
+        self.limitOfTradingPrice = 100000000 # 억
+
+        # cal_yield_for_periods 변수
+        self.noOfPartial = 5
+        self.noOfStocks = 30
+
+        # makeTradePlanByNaverFinance 변수
+        self.dateBuy = datetime.now() - relativedelta(days=1)
+        self.periodBuy = self.define_period(self.dateBuy)
+        self.totalAsset = 10000000 # 천만원
+        self.dictPortfolioTradePlan = {}
+
+    def printVariables(self):
+        print("caseStudy 용 변수들")
+        print("listYears : ", self.listYears)
+        print("caseFactors : ",self.caseFactors)
+        print("caseName : ", self.caseName)
+        print("methodStockWeight : ",self.methodStockWeight)
+        print("limitOfMarketCapitalization : ",self.limitOfMarketCapitalization)
+        print("limitOfTradingPrice : ",self.limitOfTradingPrice)
+        print("makeTradePlanByNaverFinance 용 변수들")
+        print("dateBuy : ", self.dateBuy)
+        print("periodBuy : ",self.periodBuy)
+        print("totalAsset : ",self.totalAsset)
+
+
     def loadData(self):
-        # self.change = pd.read_csv('Raw_Price/change_all.csv', index_col=0)
-        # self.close = pd.read_csv('Raw_Price/price_all.csv', index_col=0)
-        # self.kospi_index = pd.read_csv('Raw_Price/kospi_index.csv', index_col=0)
-        # # self.finance_kospi = pd.read_csv('Raw_Finance/kospi_finance.csv', index_col=0).reset_index(drop=True)
-        # # self.finance_kospi['stock_code'] = self.finance_kospi['stock_code'].apply(lambda x: '%06d' % x)
-        # self.finance_kospi_modi = pd.read_csv('Raw_Finance/kospi_finance_input_quarterly_data.csv',
-        #                                       index_col=0).reset_index(drop=True)
-        # self.finance_kospi_modi['stock_code'] = self.finance_kospi_modi['stock_code'].apply(lambda x: '%06d' % x)
-        # self.finance_naver = pd.read_csv('Raw_Finance/finance_naver_converted.csv', index_col=0).reset_index(drop=True)
-        # self.finance_naver['stock_code'] = self.finance_naver['stock_code'].apply(lambda x: '%06d' % x)
-
         with open('Raw_Price/change_all.pickle', 'rb') as handle:
             self.change = pickle.load(handle)
         with open('Raw_Price/price_all.pickle', 'rb') as handle:
@@ -93,9 +108,7 @@ class Finance():
                                    quality_factors: list = ['GP/A'],  # GP/A
                                    momentum_factors: list = ['Discrete'],  # 일반 momentum, discrete momentum
                                    size_factors: list = ['Cap'],  # 저가주
-                                   volatility_factors: list = ['Simple'],  # 변동성 factor
-                                   cap: int = 10000000000,
-                                   trade: int = 100000000):
+                                   volatility_factors: list = ['Simple']):  # 변동성 factor
         # fs : financial statements
 
         if period is None:
@@ -110,6 +123,8 @@ class Finance():
         # 보통주의 시가총액에 우선주를 더해준다.
         df_cap = self.cap_add_preferred(df_cap)
         # 시가총액과 거래대금을 기준으로 제외한다.
+        cap = self.limitOfMarketCapitalization
+        trade = self.limitOfTradingPrice
         if cap != None:
             df_cap = df_cap[lambda df_cap: df_cap['시가총액'] > np.int64(cap)]  # 시가총액 100억 이상
         if trade != None:
@@ -217,7 +232,6 @@ class Finance():
             finance_cap['Size_Score'] = 0
 
         # Volatility_factos
-        # Print(volatility_factors)
         if len(volatility_factors) != 0:
             for vol_factor in volatility_factors:
                 if vol_factor == 'Simple':
@@ -503,8 +517,6 @@ class Finance():
                               quarter_data: bool = False,  # 분기 보고서 활용할지 or 사업보고서만 활용할지
                               comparison_with_kopsi: bool = True,  # KOSPI 가격 정보 추가 or 제외
                               partial_stocks: bool = True,  # 분할 종목 선정 or 상위 종목 선정
-                              no_of_partial: int = 5,  # partial_stocks=1 일때는 몇분위로 종목분해할지 or 0 일때는 상위 몇개 종목으로 할지
-                              no_of_stocks: int = 30,
                               fscore: bool = False,
                               stock_weight: str = 'equal',
                               # 매수 비중 디테일 (equal : 동일비중매수, ma : 직전 60이평선대비 아래있으면 현금, momentum_score : 각 종목의 momentum_score를 계산해 비중설정. )
@@ -545,6 +557,7 @@ class Finance():
 
                 if partial_stocks:
                     # 분할 종목 선정
+                    no_of_partial = self.noOfPartial
                     for i in range(no_of_partial):
                         stock_list = list(
                             df.stock_code[int(len_all * i / no_of_partial):int(len_all * (i + 1) / no_of_partial)])
@@ -557,6 +570,7 @@ class Finance():
                     df_yield_duration.columns = column_name
                 else:
                     # 상위 종목 선정
+                    no_of_stocks = self.noOfStocks
                     if fscore:
                         df = df[df['Fscore'] == 3]
                     stock_list = list(df.stock_code[0:no_of_stocks])
@@ -582,20 +596,40 @@ class Finance():
 
     # 테스트트
     def caseStudy(self):
-        for no in range(len(self.caseName)):
-            case = self.caseFactors[no]
-            df_yield = self.cal_yield_for_periods(years_list=self.listYears, partial_stocks=False, stock_weight=self.methodStockWeight,
-                                             quarter_data=case['quarter'], value_factors=case['val'],
-                                             quality_factors=case['qual'],
-                                             momentum_factors=case['mom'], size_factors=case['size'],
-                                             volatility_factors=case['vol'], finance=self.finance_kospi_modi
-                                             )
-            self.dictCaseStudy[self.caseName[no]] = df_yield
+        # for no in range(len(self.caseName)):
+        case = self.caseFactors
+        df_yield = self.cal_yield_for_periods(years_list=self.listYears, partial_stocks=case['partial'], stock_weight=self.methodStockWeight,
+                                         quarter_data=case['quarter'], value_factors=case['val'],
+                                         quality_factors=case['qual'],
+                                         momentum_factors=case['mom'], size_factors=case['size'],
+                                         volatility_factors=case['vol'], finance=self.finance_kospi_modi
+                                         )
+        self.dfCaseStudyResult = df_yield
         # return self.dictCaseStudy
 
+    def makeTradePlanByNaverFinance(self):
+        listStockBuy = self.make_stock_list_by_finance(fs=self.finance_naver, date_buy=self.dateBuy, period=self.periodBuy,
+                                                       volatility_factors=[]).head(50)
+        listStockBuy = listStockBuy[listStockBuy['Fscore'] == 3].head(30)['stock_code']
+        listStockBuy, listStockPortion = self.cal_portion_by_momentum_score_defensive(stocks=listStockBuy,bgn=self.dateBuy)
+
+        totalBuy = 0
+        for i in range(len(listStockBuy)):
+            stockCode = listStockBuy[i]
+            if stockCode == "cash":
+                continue
+            price = fdr.DataReader(stockCode,start=self.date_str_bar(self.dateBuy),end=self.date_str_bar(self.dateBuy)).iat[0,3]
+            assetOfEachStock = self.totalAsset * listStockPortion[i]
+            quantityOfEachStock = math.ceil(assetOfEachStock/price)
+            totalBuy += price * quantityOfEachStock
+            self.dictPortfolioTradePlan[stockCode] = {'수량' : quantityOfEachStock}
+        print("총 매수 예정 금액 : ",totalBuy)
+        with open('/Users/malko/PycharmProjects/xing/TradingPlan/trade_plan_202106.pickle', 'wb') as handle:
+            pickle.dump(self.dictPortfolioTradePlan, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     # 결과 분석
-    def simple_analyzer(self, data: pd.DataFrame):
+    def simple_analyzer(self):
+        data = self.dfCaseStudyResult
         analysis_result = pd.DataFrame(columns=data.columns, index=['Total Profit', 'CAGR', 'MDD', 'Std', 'Sharpe_Ratio'])
         trade_year = len(data) / 252
 
@@ -616,7 +650,8 @@ class Finance():
             analysis_result[col] = [total_profit, cagr, mdd, std, sharpe_ratio]
         return analysis_result
 
-    def simple_analyzer_yearly(self, data: pd.DataFrame):
+    def simple_analyzer_yearly(self):
+        data = self.dfCaseStudyResult
         if not isinstance(data.index[0], datetime):
             data.index = [self.date_to_date(date) for date in data.index]
         analyze_result_yearly = {}
@@ -629,7 +664,8 @@ class Finance():
             analyze_result_yearly[code] = analyze_result
         return analyze_result_yearly
 
-    def simple_analyzer_monthly_return(self, data: pd.DataFrame):
+    def simple_analyzer_monthly_return(self):
+        data = self.dfCaseStudyResult
         if not isinstance(data.index[0], datetime):
             data.index = [self.date_to_date(date) for date in data.index]
 
@@ -652,9 +688,10 @@ class Finance():
             analyze_result_monthly[code] = analyze_result
         return analyze_result_monthly
 
-    def DrawingSimpleGraph(self, data: pd.DataFrame):
+    def DrawingSimpleGraph(self):
         import matplotlib.pyplot as plt
         import matplotlib.dates as md
+        data = self.dfCaseStudyResult
         if not isinstance(data.index[0], datetime):
             data.index = [self.date_to_date(date) for date in data.index]
         to_show = data.columns
