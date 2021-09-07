@@ -24,7 +24,8 @@ class Finance():
 
         # TEST 용 변수들
         self.listYears = [2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020]
-        self.caseFactors = {'val': ['PBR', 'PER', 'PCR'], 'qual': ['GP/A'], 'mom': ['Discrete'], 'size': ['Cap'], 'vol': [],'quarter': True,'partial':False}
+        self.caseFactors = {'val': ['PBR', 'PER', 'PCR','PSR'], 'qual': ['GP/A','AssetGrowth'], 'profitMom': ['OPQ','OPY','NPQ','NPY'], 'mom': ['Discrete'], 'size': ['Cap'], 'vol': [],
+                            'quarter': True,'partial':False,'sizeTarget':None,'rebalance':True,'fscore':True}
         self.caseName = ['withMomentumYear']
         # self.dictCaseStudy = {}
         self.methodStockWeight = 'momentum_score_defensive'
@@ -41,6 +42,7 @@ class Finance():
         self.dateBuy = datetime.now() - relativedelta(days=1)
         self.periodBuy = self.define_period(self.dateBuy)
         self.totalAsset = 10000000 # 천만원
+        self.sizeTarget = None  # high20, low20
         self.dictPortfolioTradePlan = {}
 
     def printVariables(self):
@@ -51,23 +53,60 @@ class Finance():
         print("methodStockWeight : ",self.methodStockWeight)
         print("limitOfMarketCapitalization : ",self.limitOfMarketCapitalization)
         print("limitOfTradingPrice : ",self.limitOfTradingPrice)
+        # print("dfFinance : ",self.dfFinance)
         print("makeTradePlanByNaverFinance 용 변수들")
         print("dateBuy : ", self.dateBuy)
         print("periodBuy : ",self.periodBuy)
         print("totalAsset : ",self.totalAsset)
 
-
+    # dict형태로 받아온다음에 사용할때 필요하면 dataframe형태로 수정하는 것으로 변경.
     def loadData(self):
-        with open('Raw_Price/change_all.pickle', 'rb') as handle:
+        with open('Raw_Price/change_all_df.pickle', 'rb') as handle:
             self.change = pickle.load(handle)
-        with open('Raw_Price/price_all.pickle', 'rb') as handle:
+            # self.dictChange = pickle.load(handle)
+            # self.change = pd.DataFrame(self.dictChange)
+        with open('Raw_Price/price_all_df.pickle', 'rb') as handle:
             self.close = pickle.load(handle)
         with open('Raw_Price/kospi_index.pickle', 'rb') as handle:
             self.kospi_index = pickle.load(handle)
+        # with open('Raw_Finance/finance_kospi_modi.pickle', 'rb') as handle:
+        #     self.finance_kospi = pickle.load(handle)
         with open('Raw_Finance/finance_kospi_modi.pickle', 'rb') as handle:
-            self.finance_kospi_modi = pickle.load(handle)
-        with open('Raw_Finance/finance_naver_converted.pickle', 'rb') as handle:
+            self.finance_kospi = pickle.load(handle)
+        with open('Raw_Finance/finance_input_quarterly_data.pickle', 'rb') as handle:
+            self.finance = pickle.load(handle)
+        with open('Raw_Finance/finance_naver_converted_202106.pickle', 'rb') as handle:
             self.finance_naver = pickle.load(handle)
+        with open('Raw_Finance/finance_latest.pickle', 'rb') as handle:
+            self.finance_latest = pickle.load(handle)
+        self.dfFinance = self.finance
+
+    def saveData(self):
+        with open('Raw_Price/change_all_dict.pickle', 'rb') as handle:
+            dictChange = pickle.load(handle)
+        with open('Raw_Price/price_all_dict.pickle', 'rb') as handle:
+            dictClose = pickle.load(handle)
+
+        from pykrx import stock
+        dateNow = datetime.now()
+        dateStrNow = self.date_str(dateNow)
+        kospi_list = stock.get_market_ticker_list(dateStrNow, market='KOSPI')
+        kosdaq_list = stock.get_market_ticker_list(dateStrNow, market='KOSDAQ')
+        dateFinal = self.dictClose['005930'].index[-1]
+        for stockCode in kospi_list+kosdaq_list:
+            dataTemp = fdr.DataReader(stockCode,start=dateFinal).iloc[1:,:]
+            dictChange[stockCode] = pd.concat([dictChange[stockCode], dataTemp['Close']])
+            dictClose[stockCode] = pd.concat([dictClose[stockCode], dataTemp['Change']])
+        with open('Raw_Price/change_all_dict.pickle', 'wb') as handle:
+            pickle.dump(dictChange, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        with open('Raw_Price/price_all_dict.pickle', 'wb') as handle:
+            pickle.dump(dictClose, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        dfChange = pd.DataFrame(dictChange)
+        dfClose = pd.DataFrame(dictClose)
+        with open('Raw_Price/change_all_df.pickle', 'wb') as handle:
+            pickle.dump(dfChange, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        with open('Raw_Price/price_all_df.pickle', 'wb') as handle:
+            pickle.dump(dfClose, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     def date_str_bar(self, date):
         date_temp = str("%s-%02d-%02d" % (date.year, date.month, date.day))
@@ -102,17 +141,25 @@ class Finance():
 
     def make_stock_list_by_finance(self, date_buy: datetime,
                                    fs: pd.DataFrame,  # 재무제표
+                                   size_target: str = None,  # high20, low20
                                    fscore: bool = True,
                                    period: int = None,
                                    value_factors: list = ['PBR', 'PER', 'PCR', 'PSR'],  # PBR, PER, PCR, PSR
-                                   quality_factors: list = ['GP/A'],  # GP/A
+                                   quality_factors: list = ['GP/A','AssetGrowth'],  # GP/A
+                                   profit_momentum_factors : list = ['OPQ', 'OPY', 'NPQ', 'NPY'],
                                    momentum_factors: list = ['Discrete'],  # 일반 momentum, discrete momentum
                                    size_factors: list = ['Cap'],  # 저가주
-                                   volatility_factors: list = ['Simple']):  # 변동성 factor
+                                   volatility_factors: list = []):  # 변동성 factor
         # fs : financial statements
 
         if period is None:
             period = self.define_period(date_buy)
+        # periodQuarterAgo, periodYearAgo 정의
+        if (str(period)[4:] == '12') or (str(period)[4:] == '09') or (str(period)[4:] == '06'):
+            periodQuarterAgo = period - 3
+        elif (str(period)[4:] == '03'):
+            periodQuarterAgo = int(str(int(str(period)[:4]) - 1) + '12')
+        periodYearAgo = int(str(int(str(period)[:4]) - 1) + str(period)[4:])
 
         # 기간의 재무제표와 시가총액 가져오기
         # 시가총액
@@ -130,11 +177,22 @@ class Finance():
         if trade != None:
             df_cap = df_cap[lambda df_cap: df_cap['거래대금'] > np.int64(trade)]  # 거래대금 1억 이상
 
+        if size_target == "high20":
+            listCap = list(df_cap['시가총액'])
+            listCap.sort()
+            df_cap = df_cap[lambda df_cap:df_cap['시가총액'] > np.int64(listCap[int(len(listCap) / 5 * 4)])]
+        elif size_target == "low20":
+            listCap = list(df_cap['시가총액'])
+            listCap.sort()
+            df_cap = df_cap[lambda df_cap: df_cap['시가총액'] < np.int64(listCap[int(len(listCap) / 5)])]
+
         df_cap['stock_code'] = df_cap.index
         df_cap = df_cap[['stock_code', '시가총액']]
         # 재무제표 -> 재무제표는 값이 없는 경우, 이전에 값을 가진 것 가져오는 것으로 수정 필요.
-        fs = fs[fs['period'] == period]
-        finance_cap = pd.merge(fs, df_cap, how='left')  # 중복된 항목명 중 왼쪽을 기준으로 정렬
+        fsThis = fs[fs['period'] == period]
+        fsYearAgo = fs[fs['period'] == periodYearAgo]
+        fsQuarterAgo = fs[fs['period'] == periodQuarterAgo]
+        finance_cap = pd.merge(fsThis, df_cap, how='left')  # 중복된 항목명 중 왼쪽을 기준으로 정렬
 
         # 상장이전에도 재무제표에 값이 있어, 시가총액이 있는 기준으로 정렬
         finance_cap = finance_cap[~finance_cap['시가총액'].isnull()]
@@ -144,6 +202,15 @@ class Finance():
         finance_cap['PER_Score'] = 0
         finance_cap['PCR_Score'] = 0
         finance_cap['PSR_Score'] = 0
+        finance_cap['GP/A_Score'] = 0
+        finance_cap['AssetGrowth_Score'] = 0
+        finance_cap['Volatility_Score'] = 0
+        finance_cap['OPQ_Score'] = 0
+        finance_cap['OPY_Score'] = 0
+        finance_cap['NPQ_Score'] = 0
+        finance_cap['NPY_Score'] = 0
+        finance_cap['Momentum_Simple_Score'] = 0
+        finance_cap['Momentum_Discrete_Score'] = 0
 
         # value_factors
         if len(value_factors) != 0:
@@ -183,9 +250,106 @@ class Finance():
                     finance_cap.loc[finance_cap[finance_cap['GP/A'].isnull()].index, 'GP/A'] = (finance_cap['매출액'] - finance_cap['매출원가']) / finance_cap['총자산']
                     finance_cap = finance_cap.dropna(subset=['GP/A']).sort_values(by='GP/A', ascending=False)
                     finance_cap['GP/A_Score'] = np.arange(1, len(finance_cap.index) + 1) / len(finance_cap.index)
-            finance_cap['Quality_Score'] = (finance_cap['GP/A_Score']) / len(quality_factors)
+                elif quality_factor == "AssetGrowth":  # 자산성장률이 낮은게 좋다.
+                    finance_cap.drop(columns=['AssetGrowth_Score'], inplace=True) # 계산할 경우 기존에 0 넣어준 것을 지워준다.
+                    fsThisAsset = fsThis.loc[:, ['stock_code', '총자산']]
+                    fsThisAsset = fsThisAsset[fsThisAsset['총자산'] > 0]  # 현재 총자산이 마이너스인 경우 제외
+                    fsYearAgoAsset = fsYearAgo.loc[:, ['stock_code', '총자산']]
+                    fsYearAgoAsset.rename(columns={'총자산': '총자산Y'}, inplace=True)
+                    # 연간 데이터간의 비교
+                    fsYearAssetComparison = pd.merge(fsThisAsset, fsYearAgoAsset, on='stock_code')
+                    fsYearAssetComparison['총자산YOY'] = (fsYearAssetComparison['총자산'] - fsYearAssetComparison['총자산Y']) / fsYearAssetComparison['총자산Y']
+                    fsYearAssetComparison = fsYearAssetComparison.dropna(subset=['총자산YOY']).sort_values(by='총자산YOY', ascending=True)
+                    fsYearAssetComparison['AssetGrowth_Score'] = np.arange(1, len(fsYearAssetComparison.index) + 1) / len(fsYearAssetComparison.index)
+                    # score입력
+                    finance_cap = pd.merge(finance_cap, fsYearAssetComparison.loc[:, ['stock_code', 'AssetGrowth_Score']], on='stock_code')
+                elif quality_factor == 'Volatility': # 낮은게 좋다.
+                    # 지난 1개월 변동성.
+                    bgn = date_buy - relativedelta(months=1)
+                    end = date_buy
+                    change_stocks = self.change[finance_cap.stock_code]
+                    yield_stocks = change_stocks.loc[self.date_str_bar(bgn):self.date_str_bar(end), :]
+                    yield_index = self.kospi_index.loc[self.date_str_bar(bgn):self.date_str_bar(end), ['Change']]
+                    for stock_code in yield_stocks.columns:
+                        yield_stocks[stock_code] = yield_stocks[stock_code] - yield_index['Change'] # 코스피 수익률만큼 제거.
+                    finance_cap['Vol_Simple'] = yield_stocks.T.std(axis=1).values
+                    finance_cap = finance_cap.dropna(subset=['Vol_Simple']).sort_values(by='Vol_Simple', ascending=True)
+                    finance_cap['Volatility_Score'] = np.arange(1, len(finance_cap.index) + 1) / len(finance_cap.index)
+            finance_cap['Quality_Score'] = (finance_cap['GP/A_Score'] + finance_cap['AssetGrowth_Score'] + finance_cap['Volatility_Score']) / len(quality_factors)
         else:
             finance_cap['Quality_Score'] = 0
+
+        # profit momentum factors
+        if len(profit_momentum_factors) !=0:
+            for profit_momentum_factor in profit_momentum_factors:
+                if profit_momentum_factor == "OPQ":  # Operating Profit Quarter
+                    finance_cap.drop(columns=['OPQ_Score'], inplace=True)  # 계산할 경우 기존에 0 넣어준 것을 지워준다.
+                    # 각 분기의 직전 1년 데이터
+                    fsThisOP = fsThis.loc[:, ['stock_code', '영업이익']]
+                    fsThisOP = fsThisOP[fsThisOP['영업이익'] > 0]  # 현재 영업이익이 마이너스인 경우 제외
+                    fsQuarterAgoOP = fsQuarterAgo.loc[:, ['stock_code', '영업이익']]
+                    fsQuarterAgoOP = fsQuarterAgoOP[fsQuarterAgoOP['영업이익'] > 0]  # 과거 영업이익이 마이너스인 경우 제외
+                    fsQuarterAgoOP.rename(columns={'영업이익': '영업이익Q'}, inplace=True)
+                    # 분기 데이터간의 비교
+                    fsQuarterOPComparison = pd.merge(fsThisOP, fsQuarterAgoOP, on='stock_code')
+                    fsQuarterOPComparison['영업이익QOQ'] = (fsQuarterOPComparison['영업이익'] - fsQuarterOPComparison['영업이익Q']) / fsQuarterOPComparison['영업이익']
+                    fsQuarterOPComparison = fsQuarterOPComparison.dropna(subset=['영업이익QOQ']).sort_values(by='영업이익QOQ', ascending=False)
+                    fsQuarterOPComparison['OPQ_Score'] = np.arange(1, len(fsQuarterOPComparison.index) + 1) / len(fsQuarterOPComparison.index)
+                    # score입력
+                    finance_cap = pd.merge(finance_cap, fsQuarterOPComparison.loc[:, ['stock_code', 'OPQ_Score']], on='stock_code')
+                elif profit_momentum_factor == "OPY":  # Operating Profit Year
+                    finance_cap.drop(columns=['OPY_Score'], inplace=True)  # 계산할 경우 기존에 0 넣어준 것을 지워준다.
+                    # 각 분기의 직전 1년 데이터
+                    fsThisOP = fsThis.loc[:, ['stock_code', '영업이익']]
+                    fsThisOP = fsThisOP[fsThisOP['영업이익'] > 0]  # 현재 영업이익이 마이너스인 경우 제외
+                    fsYearAgoOP = fsYearAgo.loc[:, ['stock_code', '영업이익']]
+                    fsYearAgoOP = fsYearAgoOP[fsYearAgoOP['영업이익'] > 0]  # 과거 영업이익이 마이너스인 경우 제외
+                    fsYearAgoOP.rename(columns={'영업이익': '영업이익Y'}, inplace=True)
+                    # 분기 데이터간의 비교
+                    fsYearOPComparison = pd.merge(fsThisOP, fsYearAgoOP, on='stock_code')
+                    fsYearOPComparison['영업이익YOY'] = (fsYearOPComparison['영업이익'] - fsYearOPComparison['영업이익Y']) / fsYearOPComparison['영업이익']
+                    fsYearOPComparison = fsYearOPComparison.dropna(subset=['영업이익YOY']).sort_values(by='영업이익YOY', ascending=False)
+                    fsYearOPComparison['OPY_Score'] = np.arange(1, len(fsYearOPComparison.index) + 1) / len(fsYearOPComparison.index)
+                    # score입력
+                    finance_cap = pd.merge(finance_cap, fsYearOPComparison.loc[:, ['stock_code', 'OPY_Score']], on='stock_code')
+                elif profit_momentum_factor == "NPQ":  # Operating Profit Quarter
+                    finance_cap.drop(columns=['NPQ_Score'], inplace=True)  # 계산할 경우 기존에 0 넣어준 것을 지워준다.
+                    # 각 분기의 직전 1년 데이터
+                    fsThis['순이익'] = [b if not math.isnan(b) else a for a, b in zip(fsThis['당기순이익'], fsThis['지배순이익'])]
+                    fsThisNP = fsThis.loc[:, ['stock_code', '순이익']]
+                    fsThisNP = fsThisNP[fsThisNP['순이익'] > 0]  # 현재 순이익이 마이너스인 경우 제외
+                    fsQuarterAgo['순이익'] = [b if not math.isnan(b) else a for a, b in zip(fsQuarterAgo['당기순이익'], fsQuarterAgo['지배순이익'])]
+                    fsQuarterAgoNP = fsQuarterAgo.loc[:, ['stock_code', '순이익']]
+                    fsQuarterAgoNP = fsQuarterAgoNP[fsQuarterAgoNP['순이익'] > 0]  # 과거 순이익이 마이너스인 경우 제외
+                    fsQuarterAgoNP.rename(columns={'순이익': '순이익Q'}, inplace=True)
+                    # 분기 데이터간의 비교
+                    fsQuarterNPComparison = pd.merge(fsThisNP, fsQuarterAgoNP, on='stock_code')
+                    fsQuarterNPComparison['순이익QOQ'] = (fsQuarterNPComparison['순이익'] - fsQuarterNPComparison['순이익Q']) / fsQuarterNPComparison['순이익']
+                    fsQuarterNPComparison = fsQuarterNPComparison.dropna(subset=['순이익QOQ']).sort_values(by='순이익QOQ', ascending=False)
+                    fsQuarterNPComparison['NPQ_Score'] = np.arange(1, len(fsQuarterNPComparison.index) + 1) / len(fsQuarterNPComparison.index)
+                    # score입력
+                    finance_cap = pd.merge(finance_cap, fsQuarterNPComparison.loc[:, ['stock_code', 'NPQ_Score']], on='stock_code')
+                elif profit_momentum_factor == "NPY":  # Operating Profit Quarter
+                    finance_cap.drop(columns=['NPY_Score'], inplace=True)  # 계산할 경우 기존에 0 넣어준 것을 지워준다.
+                    # 각 분기의 직전 1년 데이터
+                    fsThis['순이익'] = [b if not math.isnan(b) else a for a, b in zip(fsThis['당기순이익'], fsThis['지배순이익'])]
+                    fsThisNP = fsThis.loc[:, ['stock_code', '순이익']]
+                    fsThisNP = fsThisNP[fsThisNP['순이익'] > 0]  # 현재 순이익이 마이너스인 경우 제외
+                    fsYearAgo['순이익'] = [b if not math.isnan(b) else a for a, b in zip(fsYearAgo['당기순이익'], fsYearAgo['지배순이익'])]
+                    fsYearAgoNP = fsYearAgo.loc[:, ['stock_code', '순이익']]
+                    fsYearAgoNP = fsYearAgoNP[fsYearAgoNP['순이익'] > 0]  # 과거 순이익이 마이너스인 경우 제외
+                    fsYearAgoNP.rename(columns={'순이익': '순이익Y'}, inplace=True)
+                    # 분기 데이터간의 비교
+                    fsYearNPComparison = pd.merge(fsThisNP, fsYearAgoNP, on='stock_code')
+                    fsYearNPComparison['순이익YOY'] = (fsYearNPComparison['순이익'] - fsYearNPComparison['순이익Y']) / fsYearNPComparison['순이익']
+                    fsYearNPComparison = fsYearNPComparison.dropna(subset=['순이익YOY']).sort_values(by='순이익YOY', ascending=False)
+                    fsYearNPComparison['NPY_Score'] = np.arange(1, len(fsYearNPComparison.index) + 1) / len(fsYearNPComparison.index)
+                    # score입력
+                    finance_cap = pd.merge(finance_cap, fsYearNPComparison.loc[:, ['stock_code', 'NPY_Score']], on='stock_code')
+
+            finance_cap['Profit_Momentum_Score'] = (finance_cap['OPQ_Score'] + finance_cap['OPY_Score'] + finance_cap['NPQ_Score'] + finance_cap['NPY_Score']) / len(profit_momentum_factors)
+        else:
+            finance_cap['Profit_Momentum_Score'] = 0
 
         # momentum factors
         if len(momentum_factors) != 0:
@@ -199,7 +363,7 @@ class Finance():
                     finance_cap['Momentum_Simple'] = yield_stocks
                     finance_cap = finance_cap.dropna(subset=['Momentum_Simple']).sort_values(by='Momentum_Simple', ascending=False)  # 현재는 NaN을 0으로 변환한게 아니기때문에, 1년 사이에 상장한 경우 그 기간의 가격변동만을 고려.
                     finance_cap['Momentum_Simple_Score'] = np.arange(1, len(finance_cap.index) + 1) / len(finance_cap.index)
-                    finance_cap['Momentum_Score'] = finance_cap['Momentum_Simple_Score']
+                    # finance_cap['Momentum_Score'] = finance_cap['Momentum_Simple_Score']
                 elif momentum_factor == "Discrete":
                     bgn = date_buy - relativedelta(months=12)
                     end = date_buy - relativedelta(months=1)
@@ -217,7 +381,8 @@ class Finance():
                     finance_cap['Momentum_Discrete'] = yield_id['ID'].values
                     finance_cap = finance_cap.dropna(subset=['Momentum_Discrete']).sort_values(by='Momentum_Discrete', ascending=False)  # 현재는 NaN을 0으로 변환한게 아니기때문에, 1년 사이에 상장한 경우 그 기간의 가격변동만을 고려.
                     finance_cap['Momentum_Discrete_Score'] = np.arange(1, len(finance_cap.index) + 1) / len(finance_cap.index)
-                    finance_cap['Momentum_Score'] = finance_cap['Momentum_Discrete_Score']
+                    # finance_cap['Momentum_Score'] = finance_cap['Momentum_Discrete_Score']
+            finance_cap['Momentum_Score'] = (finance_cap['Momentum_Simple_Score'] + finance_cap['Momentum_Discrete_Score']) / len(momentum_factors)
         else:
             finance_cap['Momentum_Score'] = 0
 
@@ -249,7 +414,7 @@ class Finance():
         else:
             finance_cap['Vol_Score'] = 0
 
-        finance_cap['Total_Score'] = finance_cap['Value_Score'] + finance_cap['Quality_Score'] + finance_cap['Momentum_Score'] + finance_cap['Size_Score'] + finance_cap['Vol_Score']
+        finance_cap['Total_Score'] = finance_cap['Value_Score'] + finance_cap['Quality_Score'] + finance_cap['Profit_Momentum_Score'] + finance_cap['Momentum_Score'] + finance_cap['Size_Score'] + finance_cap['Vol_Score']
         finance_cap.sort_values(by='Total_Score', ascending=True, inplace=True)
 
         if fscore:
@@ -296,13 +461,13 @@ class Finance():
             finance_cap['Fscore'] = finance_cap['Fscore_1'] + finance_cap['Fscore_2'] + finance_cap['Fscore_3']
 
         # 불필요한 column 삭제
-        del_columns_list = ['총자산', '현금', '부채', '지배자산', '매출액', '매출원가', '매출총이익', '판관비',
-                            '영업이익', '당기순이익', '지배순이익', '영업활동현금흐름',
-                            '시가총액', 'PBR', 'PER', 'PCR', 'PSR', 'GP/A', 'Momentum_Discrete', 'Vol_Simple',
-                            '상장주식수_first', '상장주식수_last', 'Fscore_1', 'Fscore_2', 'Fscore_3']
-        for column in del_columns_list:
-            if column in finance_cap.columns:
-                finance_cap.drop(columns=[column], inplace=True)
+        # del_columns_list = ['총자산', '현금', '부채', '지배자산', '매출액', '매출원가', '매출총이익', '판관비',
+        #                     '영업이익', '당기순이익', '지배순이익', '영업활동현금흐름',
+        #                     '시가총액', 'PBR', 'PER', 'PCR', 'PSR', 'GP/A', 'Momentum_Discrete', 'Vol_Simple',
+        #                     '상장주식수_first', '상장주식수_last', 'Fscore_1', 'Fscore_2', 'Fscore_3']
+        # for column in del_columns_list:
+        #     if column in finance_cap.columns:
+        #         finance_cap.drop(columns=[column], inplace=True)
 
         return finance_cap
 
@@ -324,7 +489,16 @@ class Finance():
     # 종목별 비중 계산
 
     # momentum_score_active (모멘텀 스코어의 비중대로 종목 비중 결정)
-    def cal_portion_by_stock_daily_and_momentum_score_active(self, stocks: list, bgn: datetime, end: datetime):
+    def cal_portion_by_equal(self, stocks:list, bgn:datetime):
+        portions = [1 / len(stocks)] * len(stocks)
+
+        dateTemp = str(str(bgn.year) + '%02d' % (bgn.month))
+        stocksTemp = stocks.copy()
+        portionsTemp = portions.copy()
+        self.dictPortfolio[dateTemp] = {'stock': stocksTemp, 'portion': portionsTemp}
+        return stocks, portions
+
+    def cal_portion_by_stock_daily_and_momentum_score_active(self, stocks: list, bgn: datetime):
         change_stocks = self.change[stocks]
         # 평가할 수 있는 내용 추가
         momentum_score = [0] * len(stocks)
@@ -487,12 +661,12 @@ class Finance():
                 if end_temp > datetime.today():
                     continue
                 if stock_weight == 'equal':
-                    portions = [1/len(stocks)]*len(stocks)
+                    stocks, portions = self.cal_portion_by_equal(stocks=stocks, bgn=bgn_temp)
                     df_yield_partial, self.stocks_last = self.cal_yield_by_stock_daily_and_portion(stocks=stocks, portions=portions, bgn=bgn_temp, end=end_temp)
-                elif stock_weight == 'ma':
+                elif stock_weight == 'ma': # 미완성 사용금지
                     df_yield_partial = self.cal_yield_by_stock_daily_and_sell_by_stock_ma(stocks=stocks, bgn=bgn_temp, end=end_temp)
                 elif stock_weight == "momentum_score_active":
-                    stocks, portions = self.cal_portion_by_stock_daily_and_momentum_score_active(stocks=stocks, bgn=bgn_temp, end=end_temp)
+                    stocks, portions = self.cal_portion_by_stock_daily_and_momentum_score_active(stocks=stocks, bgn=bgn_temp)
                     df_yield_partial, self.stocks_last = self.cal_yield_by_stock_daily_and_portion(stocks=stocks, portions=portions, bgn=bgn_temp, end=end_temp)
                 elif stock_weight == "momentum_score_defensive":
                     stocks, portions = self.cal_portion_by_momentum_score_defensive(stocks=stocks,bgn=bgn_temp)
@@ -501,6 +675,33 @@ class Finance():
                     stocks, portions = self.cal_portion_by_momentum_score_defensive_and_keeping_momentum(stocks=stocks,bgn=bgn_temp,end=end_temp)
                     df_yield_partial, self.stocks_last = self.cal_yield_by_stock_daily_and_portion(stocks=stocks,portions=portions,bgn=bgn_temp,end=end_temp)
                 df_yield = pd.concat([df_yield,df_yield_partial],axis=0)
+        else:
+            if bgn.month == 4:
+                period = 2
+            elif bgn.month == 6:
+                period = 3
+            elif bgn.month == 9:
+                period = 3
+            elif bgn.month == 12:
+                period = 4
+            else:
+                print("check bgn")
+            bgn_temp = bgn
+            end_temp = bgn + relativedelta(months=period)
+            if stock_weight == 'equal':
+                stocks, portions = self.cal_portion_by_equal(stocks=stocks, bgn=bgn_temp)
+                df_yield, self.stocks_last = self.cal_yield_by_stock_daily_and_portion(stocks=stocks, portions=portions, bgn=bgn_temp, end=end_temp)
+            elif stock_weight == 'ma':  # 미완성 사용금지
+                df_yield = self.cal_yield_by_stock_daily_and_sell_by_stock_ma(stocks=stocks, bgn=bgn_temp, end=end_temp)
+            elif stock_weight == "momentum_score_active":
+                stocks, portions = self.cal_portion_by_stock_daily_and_momentum_score_active(stocks=stocks, bgn=bgn_temp)
+                df_yield, self.stocks_last = self.cal_yield_by_stock_daily_and_portion(stocks=stocks, portions=portions, bgn=bgn_temp, end=end_temp)
+            elif stock_weight == "momentum_score_defensive":
+                stocks, portions = self.cal_portion_by_momentum_score_defensive(stocks=stocks, bgn=bgn_temp)
+                df_yield, self.stocks_last = self.cal_yield_by_stock_daily_and_portion(stocks=stocks, portions=portions, bgn=bgn_temp, end=end_temp)
+            elif stock_weight == "keeping_momentum":
+                stocks, portions = self.cal_portion_by_momentum_score_defensive_and_keeping_momentum(stocks=stocks, bgn=bgn_temp, end=end_temp)
+                df_yield, self.stocks_last = self.cal_yield_by_stock_daily_and_portion(stocks=stocks, portions=portions, bgn=bgn_temp, end=end_temp)
         df_yield = df_yield.groupby(df_yield.index).last()
         return df_yield
 
@@ -510,18 +711,26 @@ class Finance():
         df_yield = df_yield.loc[:,['Change']]+1
         return df_yield
 
+    def cal_change_by_kospi(self, bgn: datetime, end: datetime):
+        df_change = fdr.DataReader('KS11', start=bgn, end=end)
+        df_change = df_change.loc[:, ['Close']]
+        return df_change
+
     # 기간 정보 계산
     def cal_yield_for_periods(self,
                               years_list : list,
                               finance: pd.DataFrame,  #
+                              size_target: str,  # high20, low20
                               quarter_data: bool = False,  # 분기 보고서 활용할지 or 사업보고서만 활용할지
                               comparison_with_kopsi: bool = True,  # KOSPI 가격 정보 추가 or 제외
                               partial_stocks: bool = True,  # 분할 종목 선정 or 상위 종목 선정
                               fscore: bool = False,
                               stock_weight: str = 'equal',
                               # 매수 비중 디테일 (equal : 동일비중매수, ma : 직전 60이평선대비 아래있으면 현금, momentum_score : 각 종목의 momentum_score를 계산해 비중설정. )
+                              rebalance : bool = True,
                               value_factors: list = ['PBR', 'PER', 'PCR'],  # PBR, PER, PCR
-                              quality_factors: list = ['GP/A'],  # GP/A
+                              quality_factors: list = ['GP/A','Volatility'],  # GP/A
+                              profit_momentum_factors: list = ['OPQ', 'OPY', 'NPQ', 'NPY'],
                               momentum_factors: list = ['Discrete'],  # 일반 momentum, discrete momentum
                               size_factors: list = ['Cap'],  # 저가주
                               volatility_factors: list = ['Simple']):  # 변동성 factor
@@ -546,8 +755,10 @@ class Finance():
 
                 print(date_buy, duration)
                 df = self.make_stock_list_by_finance(date_buy=date_buy, fs=finance, fscore=fscore,
+                                                     size_target = size_target,
                                                 value_factors=value_factors,
                                                 quality_factors=quality_factors,
+                                                     profit_momentum_factors = profit_momentum_factors,
                                                 momentum_factors=momentum_factors,
                                                 size_factors=size_factors,
                                                 volatility_factors=volatility_factors)
@@ -561,7 +772,7 @@ class Finance():
                     for i in range(no_of_partial):
                         stock_list = list(
                             df.stock_code[int(len_all * i / no_of_partial):int(len_all * (i + 1) / no_of_partial)])
-                        df_yield_temp = self.cal_yield_by_stock_rebal(stocks=stock_list, bgn=date_buy, duration=duration,
+                        df_yield_temp = self.cal_yield_by_stock_rebal(stocks=stock_list, bgn=date_buy, duration=duration, rebalance=rebalance,
                                                                  stock_weight=stock_weight)  # duration : month기준
                         df_yield_duration = pd.concat([df_yield_duration, df_yield_temp], axis=1)
                     column_name = list(np.arange(1, no_of_partial + 1))
@@ -575,7 +786,7 @@ class Finance():
                         df = df[df['Fscore'] == 3]
                     stock_list = list(df.stock_code[0:no_of_stocks])
                     df_yield_temp = self.cal_yield_by_stock_rebal(stocks=stock_list, bgn=date_buy,
-                                                             duration=duration,
+                                                             duration=duration, rebalance=rebalance,
                                                              stock_weight=stock_weight)  # duration : month기준
                     df_yield_duration = pd.concat([df_yield_duration, df_yield_temp], axis=1)
                     df_yield_duration.columns = ['Buy']
@@ -584,7 +795,7 @@ class Finance():
                     #                 비교를 위한 KOSPI 지수 추가
                     df_yield_kospi = self.cal_yield_by_kospi(bgn=date_buy, duration=duration)
                     df_yield_kospi.columns = ['KOSPI']
-                    df_yield_kospi.index = [self.date_str_bar(date) for date in df_yield_kospi.index]
+                    # df_yield_kospi.index = [self.date_str_bar(date) for date in df_yield_kospi.index]
                     df_yield_duration = pd.merge(df_yield_duration, df_yield_kospi, left_index=True, right_index=True,
                                                  how='left')
 
@@ -598,21 +809,56 @@ class Finance():
     def caseStudy(self):
         # for no in range(len(self.caseName)):
         case = self.caseFactors
+        self.dfFinance
         df_yield = self.cal_yield_for_periods(years_list=self.listYears, partial_stocks=case['partial'], stock_weight=self.methodStockWeight,
+                                              size_target=case['sizeTarget'], rebalance=case['rebalance'], fscore=case['fscore'],
                                          quarter_data=case['quarter'], value_factors=case['val'],
-                                         quality_factors=case['qual'],
+                                         quality_factors=case['qual'], profit_momentum_factors=case['profitMom'],
                                          momentum_factors=case['mom'], size_factors=case['size'],
-                                         volatility_factors=case['vol'], finance=self.finance_kospi_modi
+                                         volatility_factors=case['vol'], finance=self.dfFinance
                                          )
         self.dfCaseStudyResult = df_yield
         # return self.dictCaseStudy
 
-    def makeTradePlanByNaverFinance(self):
-        listStockBuy = self.make_stock_list_by_finance(fs=self.finance_naver, date_buy=self.dateBuy, period=self.periodBuy,
-                                                       volatility_factors=[]).head(50)
-        listStockBuy = listStockBuy[listStockBuy['Fscore'] == 3].head(30)['stock_code']
-        listStockBuy, listStockPortion = self.cal_portion_by_momentum_score_defensive(stocks=listStockBuy,bgn=self.dateBuy)
+    def applyTraidingStrategy(self, strategy : str, data : pd.DataFrame = pd.DataFrame(), daysForMA : int = 20):
+        if len(data) == 0:
+            data = self.dfCaseStudyResult
+        if not isinstance(data.index[0], datetime):
+            data.index = [self.date_to_date(date) for date in data.index]
 
+        if strategy == "MAKospi":
+            bgn = data.index[0]
+            end = data.index[-1]
+            dfChangeKospi = self.cal_change_by_kospi(bgn = bgn-relativedelta(days=daysForMA), end=end)
+            if datetime(2013,12,31) in dfChangeKospi.index:  # 특정일이 거래일이 아님에도 kospi에 들어가있음.
+                dfChangeKospi.drop(datetime(2013,12,31), inplace=True)
+            movingAverageKospi = dfChangeKospi['Close'].rolling(daysForMA).mean()
+            listForMASignal = [0 if (aboveMA < 0) else 1 for aboveMA in (dfChangeKospi['Close'][bgn:end]-movingAverageKospi[bgn:end])]
+            listForMASignal = listForMASignal[0:1] + listForMASignal[:-1]  # 매수/매도 신호가 있다고 하더라도 종가기준이라 다음날 거래하는게 현실적이기때문에 한자리씩 뒤로 미루기.
+
+            for code in data.columns:
+                listForMATrading = [change if ma == 1 else 1 for change, ma in zip(data[code],listForMASignal)]
+                data[code+'MA'] = listForMATrading
+        return data
+
+    def makeTradePlanByNaverFinance(self):
+
+        listStockBuy = self.make_stock_list_by_finance(fs=self.finance_latest, date_buy=self.dateBuy, period=self.periodBuy,
+                                                       size_target=self.sizeTarget,
+                                                       value_factors=self.caseFactors['val'],
+                                                       quality_factors=self.caseFactors['qual'],
+                                                       profit_momentum_factors=self.caseFactors['profitMom'],
+                                                       momentum_factors=self.caseFactors['mom'],
+                                                       size_factors=self.caseFactors['size'],
+                                                       volatility_factors=self.caseFactors['vol']).head(50)
+        listStockBuy = listStockBuy[listStockBuy['Fscore'] == 3].head(30)['stock_code']
+        listStockBuy = list(listStockBuy)
+        if self.methodStockWeight == 'equal':
+            listStockBuy, listStockPortion = self.cal_portion_by_equal(stocks=listStockBuy, bgn=self.dateBuy)
+        elif self.methodStockWeight == "momentum_score_active":
+            listStockBuy, listStockPortion = self.cal_portion_by_stock_daily_and_momentum_score_active(stocks=listStockBuy, bgn=self.dateBuy)
+        elif self.methodStockWeight == "momentum_score_defensive":
+            listStockBuy, listStockPortion = self.cal_portion_by_momentum_score_defensive(stocks=listStockBuy, bgn=self.dateBuy)
         totalBuy = 0
         for i in range(len(listStockBuy)):
             stockCode = listStockBuy[i]
@@ -624,12 +870,30 @@ class Finance():
             totalBuy += price * quantityOfEachStock
             self.dictPortfolioTradePlan[stockCode] = {'수량' : quantityOfEachStock}
         print("총 매수 예정 금액 : ",totalBuy)
+        print(self.dictPortfolioTradePlan)
+        # 코스피지수의 이평선
+        daysForMA=20
+        bgn = self.dateBuy-relativedelta(days=daysForMA+10)
+        end = self.dateBuy
+        dfChangeKospi = self.cal_change_by_kospi(bgn=bgn, end=end)
+        movingAverageKospi = dfChangeKospi['Close'].rolling(daysForMA).mean()
+        price = dfChangeKospi['Close'][-1]
+        ma = movingAverageKospi[-1]
+        if price > ma:
+            print(f"지수 이평선 돌파 ( 가격 : {price}, 이평선 : {ma}, 비율 : {(price-ma)/ma})")
+        else:
+            print(f"지수 이평선 미돌파 ( 가격 : {price}, 이평선 : {ma}, 비율 : {(price-ma)/ma})")
+
+
+    def saveTradePlan(self):
         with open('/Users/malko/PycharmProjects/xing/TradingPlan/trade_plan_202106.pickle', 'wb') as handle:
             pickle.dump(self.dictPortfolioTradePlan, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        print("저장 완료")
 
     # 결과 분석
-    def simple_analyzer(self):
-        data = self.dfCaseStudyResult
+    def simple_analyzer(self, data : pd.DataFrame = pd.DataFrame()):
+        if len(data) == 0:
+            data = self.dfCaseStudyResult
         analysis_result = pd.DataFrame(columns=data.columns, index=['Total Profit', 'CAGR', 'MDD', 'Std', 'Sharpe_Ratio'])
         trade_year = len(data) / 252
 
@@ -650,8 +914,9 @@ class Finance():
             analysis_result[col] = [total_profit, cagr, mdd, std, sharpe_ratio]
         return analysis_result
 
-    def simple_analyzer_yearly(self):
-        data = self.dfCaseStudyResult
+    def simple_analyzer_yearly(self, data : pd.DataFrame = pd.DataFrame()):
+        if len(data) == 0:
+            data = self.dfCaseStudyResult
         if not isinstance(data.index[0], datetime):
             data.index = [self.date_to_date(date) for date in data.index]
         analyze_result_yearly = {}
@@ -664,8 +929,9 @@ class Finance():
             analyze_result_yearly[code] = analyze_result
         return analyze_result_yearly
 
-    def simple_analyzer_monthly_return(self):
-        data = self.dfCaseStudyResult
+    def simple_analyzer_monthly_return(self, data : pd.DataFrame = pd.DataFrame()):
+        if len(data) == 0:
+            data = self.dfCaseStudyResult
         if not isinstance(data.index[0], datetime):
             data.index = [self.date_to_date(date) for date in data.index]
 
@@ -688,10 +954,11 @@ class Finance():
             analyze_result_monthly[code] = analyze_result
         return analyze_result_monthly
 
-    def DrawingSimpleGraph(self):
+    def DrawingSimpleGraph(self, data : pd.DataFrame = pd.DataFrame()):
         import matplotlib.pyplot as plt
         import matplotlib.dates as md
-        data = self.dfCaseStudyResult
+        if len(data) == 0:
+            data = self.dfCaseStudyResult
         if not isinstance(data.index[0], datetime):
             data.index = [self.date_to_date(date) for date in data.index]
         to_show = data.columns
