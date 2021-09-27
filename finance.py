@@ -25,7 +25,7 @@ class Finance():
         # TEST 용 변수들
         self.listYears = [2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020]
         self.caseFactors = {'val': ['PBR', 'PER', 'PCR','PSR'], 'qual': ['GP/A','AssetGrowth'], 'profitMom': ['OPQ','OPY','NPQ','NPY'], 'mom': ['Discrete'], 'size': ['Cap'], 'vol': [],
-                            'quarter': True,'partial':False,'sizeTarget':None,'rebalance':True,'fscore':True}
+                            'quarter': True,'partial':False,'sizeTarget':None,'rebalance':True,'fscore':True,'kospi':True}
         self.caseName = ['withMomentumYear']
         # self.dictCaseStudy = {}
         self.methodStockWeight = 'momentum_score_defensive'
@@ -38,8 +38,12 @@ class Finance():
         self.noOfPartial = 5
         self.noOfStocks = 30
 
+        # applyTraidingStrategy 변수
+        self.daysContinuous = None
+        self.tradingLoss = 0.3  #거래비용 및 슬리피지로 거래 마다 발생하는 손실
+
         # makeTradePlanByNaverFinance 변수
-        self.dateBuy = datetime.now() - relativedelta(days=1)
+        self.dateBuy = datetime.now()  # 당일
         self.periodBuy = self.define_period(self.dateBuy)
         self.totalAsset = 10000000 # 천만원
         self.sizeTarget = None  # high20, low20
@@ -73,30 +77,53 @@ class Finance():
         #     self.finance_kospi = pickle.load(handle)
         with open('Raw_Finance/finance_kospi_modi.pickle', 'rb') as handle:
             self.finance_kospi = pickle.load(handle)
-        with open('Raw_Finance/finance_input_quarterly_data.pickle', 'rb') as handle:
+        with open('Raw_Finance/finance_input_quarterly_data.pickle', 'rb') as handle:  # dart 정보만을 변환한 것.
             self.finance = pickle.load(handle)
         with open('Raw_Finance/finance_naver_converted_202106.pickle', 'rb') as handle:
             self.finance_naver = pickle.load(handle)
-        with open('Raw_Finance/finance_latest.pickle', 'rb') as handle:
+        with open('Raw_Finance/finance_latest.pickle', 'rb') as handle:  # naver 정보를 합친 것. (현재 매수 종목 선정 시 사용해야함)
             self.finance_latest = pickle.load(handle)
         self.dfFinance = self.finance
 
-    def saveData(self):
+    # self.change에 있는 종목명과 일자를 그대로 활용. 12분 예상
+    def initializeData(self):
+        dictChangeRaw = self.change
+        dateStart = dictChangeRaw.index[0]
+        dateEnd = dictChangeRaw.index[-1]
+        dictChange = {}
+        dictClose = {}
+        for stockCode in dictChangeRaw.columns:
+            dataTemp = fdr.DataReader(stockCode,start=dateStart,end=dateEnd)
+            dictChange[stockCode] = dataTemp['Change']
+            dictClose[stockCode] = dataTemp['Close']
+        with open('Raw_Price/change_all_dict.pickle', 'wb') as handle:
+            pickle.dump(dictChange, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        with open('Raw_Price/price_all_dict.pickle', 'wb') as handle:
+            pickle.dump(dictClose, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        dfChange = pd.DataFrame(dictChange)
+        dfClose = pd.DataFrame(dictClose)
+        with open('Raw_Price/change_all_df.pickle', 'wb') as handle:
+            pickle.dump(dfChange, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        with open('Raw_Price/price_all_df.pickle', 'wb') as handle:
+            pickle.dump(dfClose, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    # 기존 저장된 자료에 현재까지의 일자를 더해서 자료 추가. 10분 예상.
+    def resaveData(self, daysBefore : int=0):
         with open('Raw_Price/change_all_dict.pickle', 'rb') as handle:
             dictChange = pickle.load(handle)
         with open('Raw_Price/price_all_dict.pickle', 'rb') as handle:
             dictClose = pickle.load(handle)
 
         from pykrx import stock
-        dateNow = datetime.now()
-        dateStrNow = self.date_str(dateNow)
-        kospi_list = stock.get_market_ticker_list(dateStrNow, market='KOSPI')
-        kosdaq_list = stock.get_market_ticker_list(dateStrNow, market='KOSDAQ')
-        dateFinal = self.dictClose['005930'].index[-1]
+        dateNow = datetime.now()-relativedelta(days=daysBefore)
+        # dateStrNow = self.date_str(dateNow)
+        kospi_list = stock.get_market_ticker_list(dateNow, market='KOSPI')
+        kosdaq_list = stock.get_market_ticker_list(dateNow, market='KOSDAQ')
+        dateFinal = dictClose['005930'].index[-1]
         for stockCode in kospi_list+kosdaq_list:
-            dataTemp = fdr.DataReader(stockCode,start=dateFinal).iloc[1:,:]
-            dictChange[stockCode] = pd.concat([dictChange[stockCode], dataTemp['Close']])
-            dictClose[stockCode] = pd.concat([dictClose[stockCode], dataTemp['Change']])
+            dataTemp = fdr.DataReader(stockCode,start=dateFinal,end=dateNow).iloc[1:]
+            dictChange[stockCode] = pd.concat([dictChange[stockCode], dataTemp['Change']])
+            dictClose[stockCode] = pd.concat([dictClose[stockCode], dataTemp['Close']])
         with open('Raw_Price/change_all_dict.pickle', 'wb') as handle:
             pickle.dump(dictChange, handle, protocol=pickle.HIGHEST_PROTOCOL)
         with open('Raw_Price/price_all_dict.pickle', 'wb') as handle:
@@ -163,9 +190,10 @@ class Finance():
 
         # 기간의 재무제표와 시가총액 가져오기
         # 시가총액
-        date = self.date_str(date_buy)
-        df_cap_kospi = stock.get_market_cap_by_ticker(date, market='KOSPI')
-        df_cap_kosdaq = stock.get_market_cap_by_ticker(date, market='KOSDAQ')
+        # date = self.date_str(date_buy)
+        # 별도로 저장된 dict에서 가져오기.
+        df_cap_kospi = stock.get_market_cap_by_ticker(date_buy, market='KOSPI')
+        df_cap_kosdaq = stock.get_market_cap_by_ticker(date_buy, market='KOSDAQ')
         df_cap = pd.concat([df_cap_kospi, df_cap_kosdaq], axis=0)
         # 보통주의 시가총액에 우선주를 더해준다.
         df_cap = self.cap_add_preferred(df_cap)
@@ -400,14 +428,17 @@ class Finance():
         if len(volatility_factors) != 0:
             for vol_factor in volatility_factors:
                 if vol_factor == 'Simple':
-                    bgn = date_buy - relativedelta(months=1)
+                    bgn = date_buy - relativedelta(months=self.test)
                     end = date_buy
                     change_stocks = self.change[finance_cap.stock_code]
                     yield_stocks = change_stocks.loc[self.date_str_bar(bgn):self.date_str_bar(end), :]
-                    yield_index = self.kospi_index.loc[self.date_str_bar(bgn):self.date_str_bar(end), ['Change']]
-                    for stock_code in yield_stocks.columns:
-                        yield_stocks[stock_code] = yield_stocks[stock_code] - yield_index['Change']
+                    # print('yield_stocks\n',yield_stocks)
+                    # yield_index = self.kospi_index.loc[self.date_str_bar(bgn):self.date_str_bar(end), ['Change']]
+                    # for stock_code in yield_stocks.columns:
+                    #     yield_stocks[stock_code] = yield_stocks[stock_code] - yield_index['Change']
+                    # print('yield_stocks\n', yield_stocks)
                     finance_cap['Vol_Simple'] = yield_stocks.T.std(axis=1).values
+                    # print('finance_cap\n',finance_cap)
                     finance_cap = finance_cap.dropna(subset=['Vol_Simple']).sort_values(by='Vol_Simple', ascending=True)
                     finance_cap['Vol_Simple_Score'] = np.arange(1, len(finance_cap.index) + 1) / len(finance_cap.index)
                     finance_cap['Vol_Score'] = finance_cap['Vol_Simple_Score']
@@ -461,13 +492,13 @@ class Finance():
             finance_cap['Fscore'] = finance_cap['Fscore_1'] + finance_cap['Fscore_2'] + finance_cap['Fscore_3']
 
         # 불필요한 column 삭제
-        # del_columns_list = ['총자산', '현금', '부채', '지배자산', '매출액', '매출원가', '매출총이익', '판관비',
-        #                     '영업이익', '당기순이익', '지배순이익', '영업활동현금흐름',
-        #                     '시가총액', 'PBR', 'PER', 'PCR', 'PSR', 'GP/A', 'Momentum_Discrete', 'Vol_Simple',
-        #                     '상장주식수_first', '상장주식수_last', 'Fscore_1', 'Fscore_2', 'Fscore_3']
-        # for column in del_columns_list:
-        #     if column in finance_cap.columns:
-        #         finance_cap.drop(columns=[column], inplace=True)
+        del_columns_list = ['총자산', '현금', '부채', '지배자산', '매출액', '매출원가', '매출총이익', '판관비',
+                            '영업이익', '당기순이익', '지배순이익', '영업활동현금흐름',
+                            '시가총액', 'PBR', 'PER', 'PCR', 'PSR', 'GP/A', 'Momentum_Discrete', 'Vol_Simple',
+                            '상장주식수_first', '상장주식수_last', 'Fscore_1', 'Fscore_2', 'Fscore_3']
+        for column in del_columns_list:
+            if column in finance_cap.columns:
+                finance_cap.drop(columns=[column], inplace=True)
 
         return finance_cap
 
@@ -623,7 +654,7 @@ class Finance():
         axisY = np.array(listYield.cumprod())
         axisY = axisY.reshape(-1,1)
         lr.fit(axisX, axisY)
-        rar = lr.coef_ # Regressed Annual Retrun
+        rar = lr.coef_ # Regressed Annual Return
         rSquare = lr.score(axisX,axisY)
         return rar[0][0], rSquare
 
@@ -644,10 +675,11 @@ class Finance():
             yield_stocks = (change_stocks.loc[self.date_str_bar(bgn):self.date_str_bar(end),:]+1).fillna(0).cumprod()
             for i in range(len(yield_stocks.columns)):
                 yield_stocks[yield_stocks.columns[i]] = yield_stocks[yield_stocks.columns[i]]*portions[i]
+            cashPortion = 0
 
         yield_sum = yield_stocks.sum(axis=1)
         yield_list_temp = []
-        yield_list_temp.append(yield_sum.values[0])
+        yield_list_temp.append(yield_sum.values[0] * (1-self.tradingLoss*(1-cashPortion)/100))
         for i in range(len(yield_sum.values)-1):
             yield_list_temp.append(yield_sum.values[i+1] / yield_sum.values[i])
         return pd.DataFrame(data=yield_list_temp,index=yield_sum.index), yield_stocks.to_dict('records')[-1]
@@ -716,6 +748,11 @@ class Finance():
         df_change = df_change.loc[:, ['Close']]
         return df_change
 
+    def cal_change_by_kosdaq(self, bgn: datetime, end: datetime):
+        df_change = fdr.DataReader('KQ11', start=bgn, end=end)
+        df_change = df_change.loc[:, ['Close']]
+        return df_change
+
     # 기간 정보 계산
     def cal_yield_for_periods(self,
                               years_list : list,
@@ -763,15 +800,16 @@ class Finance():
                                                 size_factors=size_factors,
                                                 volatility_factors=volatility_factors)
 
-                len_all = len(df.stock_code)
                 df_yield_duration = pd.DataFrame()
 
                 if partial_stocks:
                     # 분할 종목 선정
+                    len_all = len(df.stock_code)
                     no_of_partial = self.noOfPartial
                     for i in range(no_of_partial):
                         stock_list = list(
                             df.stock_code[int(len_all * i / no_of_partial):int(len_all * (i + 1) / no_of_partial)])
+                        stock_list = [x for x in stock_list if x[0] != '9']
                         df_yield_temp = self.cal_yield_by_stock_rebal(stocks=stock_list, bgn=date_buy, duration=duration, rebalance=rebalance,
                                                                  stock_weight=stock_weight)  # duration : month기준
                         df_yield_duration = pd.concat([df_yield_duration, df_yield_temp], axis=1)
@@ -784,7 +822,7 @@ class Finance():
                     no_of_stocks = self.noOfStocks
                     if fscore:
                         df = df[df['Fscore'] == 3]
-                    stock_list = list(df.stock_code[0:no_of_stocks])
+                    stock_list = [x for x in df.stock_code if x[0] != '9'][:no_of_stocks]
                     df_yield_temp = self.cal_yield_by_stock_rebal(stocks=stock_list, bgn=date_buy,
                                                              duration=duration, rebalance=rebalance,
                                                              stock_weight=stock_weight)  # duration : month기준
@@ -811,6 +849,7 @@ class Finance():
         case = self.caseFactors
         self.dfFinance
         df_yield = self.cal_yield_for_periods(years_list=self.listYears, partial_stocks=case['partial'], stock_weight=self.methodStockWeight,
+                                              comparison_with_kopsi=case['kospi'],
                                               size_target=case['sizeTarget'], rebalance=case['rebalance'], fscore=case['fscore'],
                                          quarter_data=case['quarter'], value_factors=case['val'],
                                          quality_factors=case['qual'], profit_momentum_factors=case['profitMom'],
@@ -820,28 +859,171 @@ class Finance():
         self.dfCaseStudyResult = df_yield
         # return self.dictCaseStudy
 
-    def applyTraidingStrategy(self, strategy : str, data : pd.DataFrame = pd.DataFrame(), daysForMA : int = 20):
+    def applyTraidingStrategy(self, strategy : str, data : pd.DataFrame = pd.DataFrame(), daysForMABuy : int = 20, daysForMASell : int = 10):
+        self.noOfTrade = 0
         if len(data) == 0:
-            data = self.dfCaseStudyResult
+            data = self.dfCaseStudyResult.copy()
         if not isinstance(data.index[0], datetime):
             data.index = [self.date_to_date(date) for date in data.index]
 
         if strategy == "MAKospi":
             bgn = data.index[0]
             end = data.index[-1]
-            dfChangeKospi = self.cal_change_by_kospi(bgn = bgn-relativedelta(days=daysForMA), end=end)
+            dfChangeKospi = self.cal_change_by_kospi(bgn = bgn-relativedelta(days=daysForMABuy), end=end)
             if datetime(2013,12,31) in dfChangeKospi.index:  # 특정일이 거래일이 아님에도 kospi에 들어가있음.
                 dfChangeKospi.drop(datetime(2013,12,31), inplace=True)
-            movingAverageKospi = dfChangeKospi['Close'].rolling(daysForMA).mean()
-            listForMASignal = [0 if (aboveMA < 0) else 1 for aboveMA in (dfChangeKospi['Close'][bgn:end]-movingAverageKospi[bgn:end])]
+            movingAverageKospiBuy = dfChangeKospi['Close'].rolling(daysForMABuy).mean()
+            movingAverageKospiSell = dfChangeKospi['Close'].rolling(daysForMASell).mean()
+            listForMASignalBuy = [0 if (aboveMA < 0) else 1 for aboveMA in (dfChangeKospi['Close'][bgn:end] - movingAverageKospiBuy[bgn:end])]
+            listForMASignalSell = [0 if (aboveMA < 0) else 1 for aboveMA in (dfChangeKospi['Close'][bgn:end] - movingAverageKospiSell[bgn:end])]
+            # case1
+            # listForMASignal = [signalBuy*signalSell for signalBuy, signalSell in zip(listForMASignalBuy, listForMASignalSell)]
+            # case2 (buyMA < 현재가 < sellMA 인 경우는 이전의 상태에 따라 분리해서 고려필요)
+            listForMASignal = [listForMASignalBuy[0]*listForMASignalSell[0]]  # 계산이 복잡해지니 처음엔 곱으로 설정
+            for i in range(len(listForMASignalBuy)-1):
+                if (listForMASignalBuy[i+1]==1) & (listForMASignalSell[i+1]==0):  # 특별히 고려해야 하는 경우
+                    if not (listForMASignalBuy[i] == listForMASignalBuy[i+1]) & (listForMASignalSell[i] == listForMASignalSell[i+1]):  # 둘 중 하나라도 이전과 다르면
+                        if listForMASignalBuy[i] * listForMASignalSell[i]:
+                            listForMASignal.append(0)
+                        else:
+                            listForMASignal.append(1)
+                    else:  # 이전과 동일하다면 유지
+                        listForMASignal.append(listForMASignal[i])
+                else:
+                    listForMASignal.append(listForMASignalBuy[i+1]*listForMASignalSell[i+1])
+
             listForMASignal = listForMASignal[0:1] + listForMASignal[:-1]  # 매수/매도 신호가 있다고 하더라도 종가기준이라 다음날 거래하는게 현실적이기때문에 한자리씩 뒤로 미루기.
+            listForTradingLoss = [1]
+            for i in range(len(listForMASignal)-1):
+                if listForMASignal[i] != listForMASignal[i+1]:
+                    listForTradingLoss.append(1-self.tradingLoss/100)
+                else:
+                    listForTradingLoss.append(1)
+
+            for i in range(len(listForMASignal)-1):
+                if listForMASignal[i] != listForMASignal[i+1]:
+                    self.noOfTrade += 1
+            print(f"거래횟수 : {self.noOfTrade}")
 
             for code in data.columns:
-                listForMATrading = [change if ma == 1 else 1 for change, ma in zip(data[code],listForMASignal)]
+                listForMATrading = [change*loss if ma == 1 else loss for change, ma, loss in zip(data[code],listForMASignal,listForTradingLoss)]
                 data[code+'MA'] = listForMATrading
+            data['MASignal'] = listForMASignal
+
+        elif strategy == "MAKosdaq":
+            bgn = data.index[0]
+            end = data.index[-1]
+            dfChangeKosdaq = self.cal_change_by_kosdaq(bgn = bgn-relativedelta(days=max(daysForMABuy,daysForMASell)), end=end)
+            if datetime(2013,12,31) in dfChangeKosdaq.index:  # 특정일이 거래일이 아님에도 kospi에 들어가있음.
+                dfChangeKosdaq.drop(datetime(2013,12,31), inplace=True)
+            if datetime(2014,9,8) in dfChangeKosdaq.index:  # 특정일이 거래일이 아님에도 kospi에 들어가있음.
+                dfChangeKosdaq.drop(datetime(2014,9,8), inplace=True)
+            movingAverageKosdaqBuy = dfChangeKosdaq['Close'].rolling(daysForMABuy).mean()
+            movingAverageKosdaqSell = dfChangeKosdaq['Close'].rolling(daysForMASell).mean()
+            listForMASignalBuy = [0 if (aboveMA < 0) else 1 for aboveMA in (dfChangeKosdaq['Close'][bgn:end] - movingAverageKosdaqBuy[bgn:end])]
+            listForMASignalSell = [0 if (aboveMA < 0) else 1 for aboveMA in (dfChangeKosdaq['Close'][bgn:end] - movingAverageKosdaqSell[bgn:end])]
+            # case1
+            # listForMASignal = [signalBuy*signalSell for signalBuy, signalSell in zip(listForMASignalBuy, listForMASignalSell)]
+            # case2 (buyMA < 현재가 < sellMA 인 경우는 이전의 상태에 따라 분리해서 고려필요)
+            listForMASignal = [listForMASignalBuy[0] * listForMASignalSell[0]]  # 계산이 복잡해지니 처음엔 곱으로 설정
+            for i in range(len(listForMASignalBuy) - 1):
+                if (listForMASignalBuy[i + 1] == 1) & (listForMASignalSell[i + 1] == 0):  # 특별히 고려해야 하는 경우
+                    if not (listForMASignalBuy[i] == listForMASignalBuy[i + 1]) & (listForMASignalSell[i] == listForMASignalSell[i + 1]):  # 둘 중 하나라도 이전과 다르면
+                        if listForMASignalBuy[i] * listForMASignalSell[i]:
+                            listForMASignal.append(0)
+                        else:
+                            listForMASignal.append(1)
+                    else:  # 이전과 동일하다면 유지
+                        listForMASignal.append(listForMASignal[i])
+                else:
+                    listForMASignal.append(listForMASignalBuy[i + 1] * listForMASignalSell[i + 1])
+
+            listForMASignal = listForMASignal[0:1] + listForMASignal[:-1]  # 매수/매도 신호가 있다고 하더라도 종가기준이라 다음날 거래하는게 현실적이기때문에 한자리씩 뒤로 미루기.
+            listForTradingLoss = [1]
+            for i in range(len(listForMASignal) - 1):
+                if listForMASignal[i] != listForMASignal[i + 1]:
+                    listForTradingLoss.append(1 - self.tradingLoss / 100)
+                else:
+                    listForTradingLoss.append(1)
+
+            for i in range(len(listForMASignal)-1):
+                if listForMASignal[i] != listForMASignal[i+1]:
+                    self.noOfTrade += 1
+            print(f"거래횟수 : {self.noOfTrade}")
+
+            for code in data.columns:
+                listForMATrading = [change*loss if ma == 1 else loss for change, ma, loss in zip(data[code],listForMASignal,listForTradingLoss)]
+                data[code+'MA'] = listForMATrading
+            data['MASignal'] = listForMASignal
+
+        elif strategy == "MAKosdaqContinuous":
+            bgn = data.index[0]
+            end = data.index[-1]
+            dfChangeKosdaq = self.cal_change_by_kosdaq(bgn=bgn - relativedelta(days=max(daysForMABuy, daysForMASell)), end=end)
+            if datetime(2013, 12, 31) in dfChangeKosdaq.index:  # 특정일이 거래일이 아님에도 kospi에 들어가있음.
+                dfChangeKosdaq.drop(datetime(2013, 12, 31), inplace=True)
+            if datetime(2014, 9, 8) in dfChangeKosdaq.index:  # 특정일이 거래일이 아님에도 kospi에 들어가있음.
+                dfChangeKosdaq.drop(datetime(2014, 9, 8), inplace=True)
+            movingAverageKosdaqBuy = dfChangeKosdaq['Close'].rolling(daysForMABuy).mean()
+            movingAverageKosdaqSell = dfChangeKosdaq['Close'].rolling(daysForMASell).mean()
+            listForMASignalBuy = [0 if (aboveMA < 0) else 1 for aboveMA in (dfChangeKosdaq['Close'][bgn:end] - movingAverageKosdaqBuy[bgn:end])]
+            listForMASignalSell = [0 if (aboveMA < 0) else 1 for aboveMA in (dfChangeKosdaq['Close'][bgn:end] - movingAverageKosdaqSell[bgn:end])]
+            # case1
+            # listForMASignal = [signalBuy*signalSell for signalBuy, signalSell in zip(listForMASignalBuy, listForMASignalSell)]
+            # case2 (buyMA < 현재가 < sellMA 인 경우는 이전의 상태에 따라 분리해서 고려필요)
+            listForMASignal = [listForMASignalBuy[0] * listForMASignalSell[0]]  # 계산이 복잡해지니 처음엔 곱으로 설정
+            for i in range(len(listForMASignalBuy) - 1):
+                if (listForMASignalBuy[i + 1] == 1) & (listForMASignalSell[i + 1] == 0):  # 특별히 고려해야 하는 경우
+                    if not (listForMASignalBuy[i] == listForMASignalBuy[i + 1]) & (listForMASignalSell[i] == listForMASignalSell[i + 1]):  # 둘 중 하나라도 이전과 다르면
+                        if listForMASignalBuy[i] * listForMASignalSell[i]:
+                            listForMASignal.append(0)
+                        else:
+                            listForMASignal.append(1)
+                    else:  # 이전과 동일하다면 유지
+                        listForMASignal.append(listForMASignal[i])
+                else:
+                    listForMASignal.append(listForMASignalBuy[i + 1] * listForMASignalSell[i + 1])
+
+            listForMASignal = listForMASignal[0:1] + listForMASignal[:-1]  # 매수/매도 신호가 있다고 하더라도 종가기준이라 다음날 거래하는게 현실적이기때문에 한자리씩 뒤로 미루기.
+
+            if self.daysContinuous == None:
+                daysContinuous = int(input("다음 일자로 매도/매수가 연속될 때만 거래 실시 : "))
+            else:
+                daysContinuous = self.daysContinuous
+
+            listForMASignalActual = listForMASignal[:daysContinuous]
+            for i in range(len(listForMASignal) - daysContinuous):
+                if listForMASignal[i + daysContinuous] == listForMASignalActual[i + daysContinuous-1]:
+                    listForMASignalActual.append(listForMASignalActual[i + daysContinuous-1])
+                else:
+                    if all([listForMASignalActual[i] == listForMASignalActual[i+k] for k in range(daysContinuous)]):
+                    # if (listForMASignal[i + 2] == listForMASignal[i + 1]) & (listForMASignal[i + 1] == listForMASignal[i]):
+                        listForMASignalActual.append(listForMASignal[i + daysContinuous])
+                    else:
+                        listForMASignalActual.append(listForMASignalActual[i + daysContinuous-1])
+            listForMASignal = listForMASignalActual.copy()
+            listForTradingLoss = [1]
+            for i in range(len(listForMASignal) - 1):
+                if listForMASignal[i] != listForMASignal[i + 1]:
+                    listForTradingLoss.append(1 - self.tradingLoss / 100)
+                else:
+                    listForTradingLoss.append(1)
+
+            for i in range(len(listForMASignal) - 1):
+                if listForMASignal[i] != listForMASignal[i + 1]:
+                    self.noOfTrade += 1
+            print(f"거래횟수 : {self.noOfTrade}")
+
+            for code in data.columns:
+                listForMATrading = [change*loss if ma == 1 else loss for change, ma, loss in zip(data[code],listForMASignal,listForTradingLoss)]
+                data[code + 'MA'] = listForMATrading
+            data['MASignal'] = listForMASignal
+
         return data
 
-    def makeTradePlanByNaverFinance(self):
+    def makeTradePlanByNaverFinance(self,daysForMABuy : int = 30, daysForMASell : int = 20):
+        self.dateBuy = datetime.now()
+        print(f"매수일 기준 : {self.dateBuy}\n재무제표 기준 : {self.periodBuy}")
 
         listStockBuy = self.make_stock_list_by_finance(fs=self.finance_latest, date_buy=self.dateBuy, period=self.periodBuy,
                                                        size_target=self.sizeTarget,
@@ -851,20 +1033,24 @@ class Finance():
                                                        momentum_factors=self.caseFactors['mom'],
                                                        size_factors=self.caseFactors['size'],
                                                        volatility_factors=self.caseFactors['vol']).head(50)
-        listStockBuy = listStockBuy[listStockBuy['Fscore'] == 3].head(30)['stock_code']
-        listStockBuy = list(listStockBuy)
+        if 'Fscore' in listStockBuy.columns:
+            listStockBuy = listStockBuy[listStockBuy['Fscore'] == 3]['stock_code']
+        else:
+            listStockBuy = listStockBuy['stock_code']
+        listStockBuy = [x for x in listStockBuy if x[0]!='9'][:30]  # 중국기업은 기업코드의 첫자리가 9로 시작해서 제외. (재무제표가 불투명)
         if self.methodStockWeight == 'equal':
             listStockBuy, listStockPortion = self.cal_portion_by_equal(stocks=listStockBuy, bgn=self.dateBuy)
         elif self.methodStockWeight == "momentum_score_active":
             listStockBuy, listStockPortion = self.cal_portion_by_stock_daily_and_momentum_score_active(stocks=listStockBuy, bgn=self.dateBuy)
         elif self.methodStockWeight == "momentum_score_defensive":
             listStockBuy, listStockPortion = self.cal_portion_by_momentum_score_defensive(stocks=listStockBuy, bgn=self.dateBuy)
+        # print(listStockBuy, listStockPortion)
         totalBuy = 0
         for i in range(len(listStockBuy)):
             stockCode = listStockBuy[i]
             if stockCode == "cash":
                 continue
-            price = fdr.DataReader(stockCode,start=self.date_str_bar(self.dateBuy),end=self.date_str_bar(self.dateBuy)).iat[0,3]
+            price = fdr.DataReader(stockCode,start=self.date_str_bar(self.dateBuy-relativedelta(days=10)),end=self.date_str_bar(self.dateBuy)).iat[-1,3]
             assetOfEachStock = self.totalAsset * listStockPortion[i]
             quantityOfEachStock = math.ceil(assetOfEachStock/price)
             totalBuy += price * quantityOfEachStock
@@ -872,18 +1058,21 @@ class Finance():
         print("총 매수 예정 금액 : ",totalBuy)
         print(self.dictPortfolioTradePlan)
         # 코스피지수의 이평선
-        daysForMA=20
-        bgn = self.dateBuy-relativedelta(days=daysForMA+10)
+        bgn = self.dateBuy-relativedelta(days=max(daysForMABuy,daysForMASell)+40)
         end = self.dateBuy
-        dfChangeKospi = self.cal_change_by_kospi(bgn=bgn, end=end)
-        movingAverageKospi = dfChangeKospi['Close'].rolling(daysForMA).mean()
-        price = dfChangeKospi['Close'][-1]
-        ma = movingAverageKospi[-1]
-        if price > ma:
-            print(f"지수 이평선 돌파 ( 가격 : {price}, 이평선 : {ma}, 비율 : {(price-ma)/ma})")
-        else:
-            print(f"지수 이평선 미돌파 ( 가격 : {price}, 이평선 : {ma}, 비율 : {(price-ma)/ma})")
+        dfChangeKosdaq = self.cal_change_by_kosdaq(bgn=bgn, end=end)
+        movingAverageKosdaqBuy = dfChangeKosdaq['Close'].rolling(daysForMABuy).mean()
+        movingAverageKosdaqSell = dfChangeKosdaq['Close'].rolling(daysForMASell).mean()
 
+        price = dfChangeKosdaq['Close'][-1]
+        maBuy = movingAverageKosdaqBuy[-1]
+        maSell = movingAverageKosdaqSell[-1]
+        print(f"최근 기간의 {daysForMABuy}일 이평선 매수 신호 : {['Y' if priceDay>maDay else 'N' for priceDay, maDay in zip(dfChangeKosdaq['Close'][-15:],movingAverageKosdaqBuy[-15:])]}")
+        print(f"최근 기간의 {daysForMASell}일 이평선 매도 신호 : {['Y' if priceDay > maDay else 'N' for priceDay, maDay in zip(dfChangeKosdaq['Close'][-15:], movingAverageKosdaqSell[-15:])]}")
+        if price > maBuy:  # buy, sell 지표 모두 20일 기준이기때문에 maBuy 만 활용.
+            print(f"지수 {daysForMABuy}일 이평선 돌파 ( 가격 : {price}, 이평선 : {maBuy}, 비율 : {(price-maBuy)/maBuy})")
+        else:
+            print(f"지수 이평선 미돌파 ( 가격 : {price}, 이평선 : {maBuy}, 비율 : {(price-maBuy)/maBuy})")
 
     def saveTradePlan(self):
         with open('/Users/malko/PycharmProjects/xing/TradingPlan/trade_plan_202106.pickle', 'wb') as handle:
@@ -898,6 +1087,8 @@ class Finance():
         trade_year = len(data) / 252
 
         for col in data.columns:
+            if "Signal" in str(col):
+                continue
             total_profit = data[col].cumprod()[-1]
             cagr = round((total_profit ** (1 / trade_year) - 1) * 100, 2)
 
@@ -921,11 +1112,13 @@ class Finance():
             data.index = [self.date_to_date(date) for date in data.index]
         analyze_result_yearly = {}
         for code in data.columns:
+            if "Signal" in str(code):
+                continue
             year_range = range(data.index[0].year, data.index[-1].year + 1)
             analyze_result = pd.DataFrame(columns=year_range, index=['CAGR', 'MDD', 'Std', 'Sharpe_Ratio'])
             for year in year_range:
-                data_year = data.loc[datetime(year, 1, 1):datetime(year, 12, 31), ['Buy']]
-                analyze_result[year] = self.simple_analyzer(data_year)['Buy'][1:]
+                data_year = data.loc[datetime(year, 1, 1):datetime(year, 12, 31), [code]]
+                analyze_result[year] = self.simple_analyzer(data_year)[code][1:]
             analyze_result_yearly[code] = analyze_result
         return analyze_result_yearly
 
@@ -939,7 +1132,8 @@ class Finance():
         month_range = range(1, 13)
         analyze_result_monthly = {}
         for code in data.columns:
-
+            if "Signal" in str(code):
+                continue
             analyze_result = pd.DataFrame(columns=month_range, index=year_range)
             for month in month_range:
                 monthly_return_list = []
@@ -964,6 +1158,8 @@ class Finance():
         to_show = data.columns
         fig, ax = plt.subplots(1, 1, figsize=(10, 8))
         for i in range(len(to_show)):
+            if 'Signal' in str(to_show[i]):
+                continue
             ax.plot(data.cumprod()[to_show[i]])
         ax.xaxis.set_major_locator(md.YearLocator(1, month=1, day=1))
         ax.xaxis.set_major_formatter(md.DateFormatter('%Y'))
