@@ -26,21 +26,28 @@ class Finance():
         self.listYears = [2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020]
         self.caseFactors = {'val': ['PBR', 'PER', 'PCR','PSR'], 'qual': ['GP/A','AssetGrowth'], 'profitMom': ['OPQ','OPY','NPQ','NPY'], 'mom': ['Discrete'], 'size': ['Cap'], 'vol': [],
                             'quarter': True,'partial':False,'sizeTarget':None,'rebalance':True,'fscore':True,'kospi':True}
-        self.caseName = ['withMomentumYear']
-        # self.dictCaseStudy = {}
-        self.methodStockWeight = 'momentum_score_defensive'
+        self.methodStockWeight = 'equal'
 
         # make_stock_list_by_finance 변수
-        self.limitOfMarketCapitalization = 10000000000 # 백억
-        self.limitOfTradingPrice = 100000000 # 억
+        self.limitOfMarketCapitalization = 10000000000 # 100억
+        self.limitOfTradingPrice = 100000000 # 1억
+        self.exclusiveStock = ['중국', '금융', '지주']  # 제외항목
+        self.limitOfPBR = 0.2
+        self.limitOfPER = 2
+        self.limitOfPCR = 1
+        self.limitOfPSR = 0.1
 
         # cal_yield_for_periods 변수
         self.noOfPartial = 5
         self.noOfStocks = 30
+        #  시점, 종목명, 종목별 성과, {시점 : {'종목명':[],'성과':[],'상폐수':}},{시점 : }
+        self.logSheets = {}
+        self.caseStudyResult = {}
+
 
         # applyTraidingStrategy 변수
         self.daysContinuous = None
-        self.tradingLoss = 0.3  #거래비용 및 슬리피지로 거래 마다 발생하는 손실
+        self.tradingLoss = 1  #거래비용 및 슬리피지로 거래 마다 발생하는 손실 [%]
 
         # makeTradePlanByNaverFinance 변수
         self.dateBuy = datetime.now()  # 당일
@@ -53,7 +60,6 @@ class Finance():
         print("caseStudy 용 변수들")
         print("listYears : ", self.listYears)
         print("caseFactors : ",self.caseFactors)
-        print("caseName : ", self.caseName)
         print("methodStockWeight : ",self.methodStockWeight)
         print("limitOfMarketCapitalization : ",self.limitOfMarketCapitalization)
         print("limitOfTradingPrice : ",self.limitOfTradingPrice)
@@ -83,6 +89,8 @@ class Finance():
             self.finance_naver = pickle.load(handle)
         with open('Raw_Finance/finance_latest.pickle', 'rb') as handle:  # naver 정보를 합친 것. (현재 매수 종목 선정 시 사용해야함)
             self.finance_latest = pickle.load(handle)
+        with open('Raw_Finance/finance_quantking_201809.pickle', 'rb') as handle:
+            self.finance_quantking = pickle.load(handle)
         self.dfFinance = self.finance
 
     # self.change에 있는 종목명과 일자를 그대로 활용. 12분 예상
@@ -216,7 +224,7 @@ class Finance():
 
         df_cap['stock_code'] = df_cap.index
         df_cap = df_cap[['stock_code', '시가총액']]
-        # 재무제표 -> 재무제표는 값이 없는 경우, 이전에 값을 가진 것 가져오는 것으로 수정 필요.
+
         fsThis = fs[fs['period'] == period]
         fsYearAgo = fs[fs['period'] == periodYearAgo]
         fsQuarterAgo = fs[fs['period'] == periodQuarterAgo]
@@ -224,6 +232,64 @@ class Finance():
 
         # 상장이전에도 재무제표에 값이 있어, 시가총액이 있는 기준으로 정렬
         finance_cap = finance_cap[~finance_cap['시가총액'].isnull()]
+
+        # 제외항목이 있는 경우 제거.
+
+        if self.exclusiveStock != None:
+            with open('Raw_Finance/listExclusive.pickle', 'rb') as handle:
+                dfExclusive = pickle.load(handle)
+            for exclusiveCategory in self.exclusiveStock:
+                dfExclusiveStocks = dfExclusive[dfExclusive['Category'] == exclusiveCategory].StockCode
+                listIndex = []
+                for stockCode in list(dfExclusiveStocks):
+                    indexName = finance_cap[finance_cap['stock_code'] == stockCode].index
+                    if len(indexName) != 0:
+                        listIndex.append(indexName[0])
+                finance_cap.drop(listIndex,inplace=True)
+
+        # F-score 3 점 외에는 제거.
+        if fscore:
+            last_year = date_buy.year - 1
+            Fscore_1_first = stock.get_market_cap_by_ticker(date=str(last_year) + '0101')
+            Fscore_1_first['stock_code'] = Fscore_1_first.index
+            Fscore_1_first = Fscore_1_first[['stock_code', '상장주식수']]
+            Fscore_1_first.rename(columns={'상장주식수': '상장주식수_first'}, inplace=True)
+            Fscore_1_last = stock.get_market_cap_by_ticker(date=str(last_year) + '1231')
+            Fscore_1_last['stock_code'] = Fscore_1_last.index
+            Fscore_1_last = Fscore_1_last[['stock_code', '상장주식수']]
+            Fscore_1_last.rename(columns={'상장주식수': '상장주식수_last'}, inplace=True)
+            finance_cap = pd.merge(finance_cap, Fscore_1_first, how='left')
+            finance_cap = pd.merge(finance_cap, Fscore_1_last, how='left')
+
+            Fscore_1 = []
+            for i in range(len(finance_cap.index)):
+                first = finance_cap['상장주식수_first'][i]
+                last = finance_cap['상장주식수_last'][i]
+                if first < last:
+                    Fscore_1.append(0)
+                else:
+                    Fscore_1.append(1)  # 만일 무상감자와 유상증자를 해서 주식수는 줄어들었지만 유상증자의 효과가 있다면 찾기 어려움 (000040, 2020)
+            finance_cap['Fscore_1'] = Fscore_1
+
+            Fscore_2 = []
+            for i in range(len(finance_cap.index)):
+                if finance_cap['지배순이익'][i] > 0:
+                    Fscore_2.append(1)
+                elif math.isnan(finance_cap['지배순이익'][i]) & (finance_cap['당기순이익'][i] > 0):
+                    Fscore_2.append(1)
+                else:
+                    Fscore_2.append(0)
+            finance_cap['Fscore_2'] = Fscore_2
+
+            Fscore_3 = []
+            for i in range(len(finance_cap.index)):
+                if finance_cap['영업활동현금흐름'][i] > 0:
+                    Fscore_3.append(1)
+                else:
+                    Fscore_3.append(0)
+            finance_cap['Fscore_3'] = Fscore_3
+            finance_cap['Fscore'] = finance_cap['Fscore_1'] + finance_cap['Fscore_2'] + finance_cap['Fscore_3']
+            finance_cap = finance_cap[finance_cap['Fscore'] == 3]
 
         # 초기화, 하나의 factor에 여러개의 score를 고려하면 0을 넣어줘야 함.
         finance_cap['PBR_Score'] = 0
@@ -244,26 +310,62 @@ class Finance():
         if len(value_factors) != 0:
             for value_factor in value_factors:
                 if value_factor == 'PBR':
-                    finance_cap['PBR'] = finance_cap['시가총액'] / finance_cap['지배자산']
-                    finance_cap.loc[finance_cap[finance_cap['PBR'].isnull()].index, 'PBR'] = finance_cap['시가총액'] / finance_cap['총자산']
-                    finance_cap = finance_cap[finance_cap['PBR'] > 0]
-                    finance_cap = finance_cap.dropna(subset=['PBR']).sort_values(by='PBR', ascending=True)
+                    if value_factor not in finance_cap.columns:
+                        finance_cap['PBR'] = finance_cap['시가총액'] / finance_cap['지배자산']
+                        finance_cap.loc[finance_cap[finance_cap['PBR'].isnull()].index, 'PBR'] = finance_cap['시가총액'] / finance_cap['총자산']
+                    # if self.limitOfPBR != None:
+                    #     finance_cap = finance_cap[finance_cap['PBR'] > self.limitOfPBR]
+                    finance_cap = finance_cap.dropna(subset=['PBR'])
+                    finance_cap['1/PBR'] = 1/finance_cap['PBR']
+                    finance_cap = finance_cap.sort_values(by='1/PBR',ascending=False)
+                    if self.limitOfPBR != None:
+                        finance_cap = finance_cap[finance_cap['1/PBR'] < 1/self.limitOfPBR]
+                    # -1 -0.2 0.2 1 -1 -5 5 1
+                    # finance_cap = pd.concat([finance_cap[finance_cap['PBR']>0].sort_values(by='PBR',ascending=True),
+                    #                          finance_cap[finance_cap['PBR']<=0].sort_values(by='PBR',ascending=False)])
                     finance_cap['PBR_Score'] = np.arange(1, len(finance_cap.index) + 1) / len(finance_cap.index)
                 elif value_factor == 'PER':
-                    finance_cap['PER'] = finance_cap['시가총액'] / finance_cap['지배순이익']
-                    finance_cap.loc[finance_cap[finance_cap['PER'].isnull()].index, 'PER'] = finance_cap['시가총액'] / finance_cap['당기순이익']
-                    finance_cap = finance_cap[finance_cap['PER'] > 0]
-                    finance_cap = finance_cap.dropna(subset=['PER']).sort_values(by='PER', ascending=True)
+                    if value_factor not in finance_cap.columns:
+                        finance_cap['PER'] = finance_cap['시가총액'] / finance_cap['지배순이익']
+                        finance_cap.loc[finance_cap[finance_cap['PER'].isnull()].index, 'PER'] = finance_cap['시가총액'] / finance_cap['당기순이익']
+                    # if self.limitOfPER != None:
+                    #     finance_cap = finance_cap[finance_cap['PER'] > self.limitOfPER]
+                    finance_cap = finance_cap.dropna(subset=['PER'])
+                    finance_cap['1/PER'] = 1 / finance_cap['PER']
+                    finance_cap = finance_cap.sort_values(by='1/PER', ascending=False)
+                    if self.limitOfPER != None:
+                        finance_cap = finance_cap[finance_cap['1/PER'] < 1 / self.limitOfPER]
+
+                    # finance_cap = pd.concat([finance_cap[finance_cap['PER']>0].sort_values(by='PER',ascending=True),
+                    #                          finance_cap[finance_cap['PER']<=0].sort_values(by='PER',ascending=False)])
                     finance_cap['PER_Score'] = np.arange(1, len(finance_cap.index) + 1) / len(finance_cap.index)
                 elif value_factor == 'PCR':
-                    finance_cap['PCR'] = finance_cap['시가총액'] / finance_cap['영업활동현금흐름']
-                    finance_cap = finance_cap[finance_cap['PCR'] > 0]
-                    finance_cap = finance_cap.dropna(subset=['PCR']).sort_values(by='PCR', ascending=True)
+                    if value_factor not in finance_cap.columns:
+                        finance_cap['PCR'] = finance_cap['시가총액'] / finance_cap['영업활동현금흐름']
+                    # if self.limitOfPCR != None:
+                    #     finance_cap = finance_cap[finance_cap['PCR'] > self.limitOfPCR]
+                    finance_cap = finance_cap.dropna(subset=['PCR'])
+                    finance_cap['1/PCR'] = 1 / finance_cap['PCR']
+                    finance_cap = finance_cap.sort_values(by='1/PCR', ascending=False)
+                    if self.limitOfPCR != None:
+                        finance_cap = finance_cap[finance_cap['1/PCR'] < 1 / self.limitOfPCR]
+                    #
+                    # finance_cap = pd.concat([finance_cap[finance_cap['PCR'] > 0].sort_values(by='PCR', ascending=True),
+                    #                          finance_cap[finance_cap['PCR'] <= 0].sort_values(by='PCR', ascending=False)])
                     finance_cap['PCR_Score'] = np.arange(1, len(finance_cap.index) + 1) / len(finance_cap.index)
                 elif value_factor == 'PSR':
-                    finance_cap['PSR'] = finance_cap['시가총액'] / finance_cap['매출액']
-                    finance_cap = finance_cap[finance_cap['PSR'] > 0]
-                    finance_cap = finance_cap.dropna(subset=['PSR']).sort_values(by='PSR', ascending=True)
+                    if value_factor not in finance_cap.columns:
+                        finance_cap['PSR'] = finance_cap['시가총액'] / finance_cap['매출액']
+                    # if self.limitOfPSR != None:
+                    #     finance_cap = finance_cap[finance_cap['PSR'] > self.limitOfPSR]
+                    finance_cap = finance_cap.dropna(subset=['PSR'])
+                    finance_cap['1/PSR'] = 1 / finance_cap['PSR']
+                    finance_cap = finance_cap.sort_values(by='1/PSR', ascending=False)
+                    if self.limitOfPSR != None:
+                        finance_cap = finance_cap[finance_cap['1/PSR'] < 1 / self.limitOfPSR]
+
+                    # finance_cap = pd.concat([finance_cap[finance_cap['PSR'] > 0].sort_values(by='PSR', ascending=True),
+                    #                          finance_cap[finance_cap['PSR'] <= 0].sort_values(by='PSR', ascending=False)])
                     finance_cap['PSR_Score'] = np.arange(1, len(finance_cap.index) + 1) / len(finance_cap.index)
             finance_cap['Value_Score'] = (finance_cap['PBR_Score'] + finance_cap['PER_Score'] + finance_cap[
                 'PCR_Score'] + finance_cap['PSR_Score']) / len(value_factors)
@@ -274,9 +376,13 @@ class Finance():
         if len(quality_factors) != 0:
             for quality_factor in quality_factors:
                 if quality_factor == 'GP/A':
-                    finance_cap['GP/A'] = finance_cap['매출총이익'] / finance_cap['총자산']
-                    finance_cap.loc[finance_cap[finance_cap['GP/A'].isnull()].index, 'GP/A'] = (finance_cap['매출액'] - finance_cap['매출원가']) / finance_cap['총자산']
+                    if quality_factor not in finance_cap.columns:
+                        finance_cap['GP/A'] = finance_cap['매출총이익'] / finance_cap['총자산']
+                        finance_cap.loc[finance_cap[finance_cap['GP/A'].isnull()].index, 'GP/A'] = (finance_cap['매출액'] - finance_cap['매출원가']) / finance_cap['총자산']
                     finance_cap = finance_cap.dropna(subset=['GP/A']).sort_values(by='GP/A', ascending=False)
+                    # finance_cap = pd.concat([finance_cap[finance_cap['GP/A'] > 0].sort_values(by='GP/A', ascending=False),
+                    #                          finance_cap[finance_cap['GP/A'] <= 0].sort_values(by='GP/A', ascending=True)])
+                    #
                     finance_cap['GP/A_Score'] = np.arange(1, len(finance_cap.index) + 1) / len(finance_cap.index)
                 elif quality_factor == "AssetGrowth":  # 자산성장률이 낮은게 좋다.
                     finance_cap.drop(columns=['AssetGrowth_Score'], inplace=True) # 계산할 경우 기존에 0 넣어준 것을 지워준다.
@@ -293,7 +399,7 @@ class Finance():
                     finance_cap = pd.merge(finance_cap, fsYearAssetComparison.loc[:, ['stock_code', 'AssetGrowth_Score']], on='stock_code')
                 elif quality_factor == 'Volatility': # 낮은게 좋다.
                     # 지난 1개월 변동성.
-                    bgn = date_buy - relativedelta(months=1)
+                    bgn = date_buy - relativedelta(months=60)
                     end = date_buy
                     change_stocks = self.change[finance_cap.stock_code]
                     yield_stocks = change_stocks.loc[self.date_str_bar(bgn):self.date_str_bar(end), :]
@@ -428,10 +534,11 @@ class Finance():
         if len(volatility_factors) != 0:
             for vol_factor in volatility_factors:
                 if vol_factor == 'Simple':
-                    bgn = date_buy - relativedelta(months=self.test)
+                    bgn = date_buy - relativedelta(months=6)
                     end = date_buy
                     change_stocks = self.change[finance_cap.stock_code]
                     yield_stocks = change_stocks.loc[self.date_str_bar(bgn):self.date_str_bar(end), :]
+
                     # print('yield_stocks\n',yield_stocks)
                     # yield_index = self.kospi_index.loc[self.date_str_bar(bgn):self.date_str_bar(end), ['Change']]
                     # for stock_code in yield_stocks.columns:
@@ -447,49 +554,6 @@ class Finance():
 
         finance_cap['Total_Score'] = finance_cap['Value_Score'] + finance_cap['Quality_Score'] + finance_cap['Profit_Momentum_Score'] + finance_cap['Momentum_Score'] + finance_cap['Size_Score'] + finance_cap['Vol_Score']
         finance_cap.sort_values(by='Total_Score', ascending=True, inplace=True)
-
-        if fscore:
-            # F-score
-            last_year = date_buy.year - 1
-            Fscore_1_first = stock.get_market_cap_by_ticker(date=str(last_year) + '0101')
-            Fscore_1_first['stock_code'] = Fscore_1_first.index
-            Fscore_1_first = Fscore_1_first[['stock_code', '상장주식수']]
-            Fscore_1_first.rename(columns={'상장주식수': '상장주식수_first'}, inplace=True)
-            Fscore_1_last = stock.get_market_cap_by_ticker(date=str(last_year) + '1231')
-            Fscore_1_last['stock_code'] = Fscore_1_last.index
-            Fscore_1_last = Fscore_1_last[['stock_code', '상장주식수']]
-            Fscore_1_last.rename(columns={'상장주식수': '상장주식수_last'}, inplace=True)
-            finance_cap = pd.merge(finance_cap, Fscore_1_first, how='left')
-            finance_cap = pd.merge(finance_cap, Fscore_1_last, how='left')
-
-            Fscore_1 = []
-            for i in range(len(finance_cap.index)):
-                first = finance_cap['상장주식수_first'][i]
-                last = finance_cap['상장주식수_last'][i]
-                if first < last:
-                    Fscore_1.append(0)
-                else:
-                    Fscore_1.append(1)  # 만일 무상감자와 유상증자를 해서 주식수는 줄어들었지만 유상증자의 효과가 있다면 찾기 어려움 (000040, 2020)
-            finance_cap['Fscore_1'] = Fscore_1
-
-            Fscore_2 = []
-            for i in range(len(finance_cap.index)):
-                if finance_cap['지배순이익'][i] > 0:
-                    Fscore_2.append(1)
-                elif math.isnan(finance_cap['지배순이익'][i]) & (finance_cap['당기순이익'][i] > 0):
-                    Fscore_2.append(1)
-                else:
-                    Fscore_2.append(0)
-            finance_cap['Fscore_2'] = Fscore_2
-
-            Fscore_3 = []
-            for i in range(len(finance_cap.index)):
-                if finance_cap['영업활동현금흐름'][i] > 0:
-                    Fscore_3.append(1)
-                else:
-                    Fscore_3.append(0)
-            finance_cap['Fscore_3'] = Fscore_3
-            finance_cap['Fscore'] = finance_cap['Fscore_1'] + finance_cap['Fscore_2'] + finance_cap['Fscore_3']
 
         # 불필요한 column 삭제
         del_columns_list = ['총자산', '현금', '부채', '지배자산', '매출액', '매출원가', '매출총이익', '판관비',
@@ -523,7 +587,7 @@ class Finance():
     def cal_portion_by_equal(self, stocks:list, bgn:datetime):
         portions = [1 / len(stocks)] * len(stocks)
 
-        dateTemp = str(str(bgn.year) + '%02d' % (bgn.month))
+        dateTemp = str(str(bgn.year) + '%02d' % (bgn.month) + '%02d' % (bgn.day))
         stocksTemp = stocks.copy()
         portionsTemp = portions.copy()
         self.dictPortfolio[dateTemp] = {'stock': stocksTemp, 'portion': portionsTemp}
@@ -558,7 +622,7 @@ class Finance():
         stocks.append('cash')
         portions.append(1 - sum(portions))
 
-        dateTemp = str(str(bgn.year) + '%02d' % (bgn.month))
+        dateTemp = str(str(bgn.year) + '%02d' % (bgn.month) + '%02d' % (bgn.day))
         stocksTemp = stocks.copy()
         portionsTemp = portions.copy()
         self.dictPortfolio[dateTemp] = {'stock': stocksTemp, 'portion': portionsTemp}
@@ -588,7 +652,7 @@ class Finance():
             stocks_new = stocks[:stocks_no_new] + stocks_with_momentum
             stocks_new, portion_new = self.cal_portion_by_momentum_score_defensive(stocks=stocks_new, bgn=bgn)
 
-        dateTemp = str(str(bgn.year) + '%02d' % (bgn.month))
+        dateTemp = str(str(bgn.year) + '%02d' % (bgn.month) + '%02d' % (bgn.day))
         stocksTemp = stocks_new.copy()
         portionsTemp = portion_new.copy()
         self.dictPortfolio[dateTemp] = {'stock': stocksTemp, 'portion': portionsTemp}
@@ -636,7 +700,7 @@ class Finance():
             portion_new.append(1 - sum(portion_new))
             # portion_new = list(np.array(portion_new) / sum(portion_new))
 
-        dateTemp = str(str(bgn.year) + '%02d' % (bgn.month))
+        dateTemp = str(str(bgn.year) + '%02d' % (bgn.month) + '%02d' % (bgn.day))
         stocksTemp = stocks_new.copy()
         portionsTemp = portion_new.copy()
         self.dictPortfolio[dateTemp] = {'stock': stocksTemp, 'portion': portionsTemp}
@@ -655,27 +719,39 @@ class Finance():
         axisY = axisY.reshape(-1,1)
         lr.fit(axisX, axisY)
         rar = lr.coef_ # Regressed Annual Return
-        rSquare = lr.score(axisX,axisY)
-        return rar[0][0], rSquare
+        # rSquare = lr.score(axisX,axisY)
+        return rar[0][0]
 
     # def calculatePortion
 
     # 대상 기간 가격 정보
     def cal_yield_by_stock_daily_and_portion (self, stocks : list, portions : list, bgn : datetime, end : datetime):
+        logSheetTemp = {}
+        logSheetTemp['Stock'] = stocks
+        logSheetTemp['Portion'] = portions
+
         if 'cash' in stocks:
             cashPortion = portions.pop(stocks.index('cash'))
             stocks.remove('cash')
-            change_stocks = self.change[stocks[:]]
-            yield_stocks = (change_stocks.loc[self.date_str_bar(bgn):self.date_str_bar(end),:]+1).fillna(0).cumprod()
+            # change_stocks = self.change[stocks]
+            change_stocks = self.change[stocks].loc[self.date_str_bar(bgn):self.date_str_bar(end),:]
+            yield_stocks = (change_stocks+1).fillna(0).cumprod()
+            # logSheetTemp['Yield'] = yield_stocks
             for i in range(len(yield_stocks.columns)):
                 yield_stocks[yield_stocks.columns[i]] = yield_stocks[yield_stocks.columns[i]]*portions[i]
             yield_stocks['cash'] = cashPortion
         else:
-            change_stocks = self.change[stocks]
-            yield_stocks = (change_stocks.loc[self.date_str_bar(bgn):self.date_str_bar(end),:]+1).fillna(0).cumprod()
+            # change_stocks = self.change[stocks]
+            change_stocks = self.change[stocks].loc[self.date_str_bar(bgn):self.date_str_bar(end), :]
+            yield_stocks = (change_stocks+1).fillna(0).cumprod()
+            # logSheetTemp['Yield'] = yield_stocks
             for i in range(len(yield_stocks.columns)):
                 yield_stocks[yield_stocks.columns[i]] = yield_stocks[yield_stocks.columns[i]]*portions[i]
             cashPortion = 0
+
+        logSheetTemp['Change'] = change_stocks
+        logSheetTemp['delisting'] = sum([0 if i == 0 else 1 for i in change_stocks.isnull().sum()])
+        self.logSheets[self.date_str(bgn)[:6]] = logSheetTemp.copy()
 
         yield_sum = yield_stocks.sum(axis=1)
         yield_list_temp = []
@@ -778,6 +854,8 @@ class Finance():
         else:
             months = [4]
 
+        #  사업보고서 : +90일, 반기보고서/분기보고서 : +60일(연결, 변도 : +45일)
+        #  사업보고서 : 4/1, 1분기 : 5/15, 반기 : 8/15, 3분기 : 11/15
         for year in years:
             for month in months:
                 date_buy = datetime(year, month, 15)
@@ -790,7 +868,7 @@ class Finance():
                 else:
                     duration = 12
 
-                print(date_buy, duration)
+                # print(date_buy, duration)
                 df = self.make_stock_list_by_finance(date_buy=date_buy, fs=finance, fscore=fscore,
                                                      size_target = size_target,
                                                 value_factors=value_factors,
@@ -807,9 +885,8 @@ class Finance():
                     len_all = len(df.stock_code)
                     no_of_partial = self.noOfPartial
                     for i in range(no_of_partial):
-                        stock_list = list(
-                            df.stock_code[int(len_all * i / no_of_partial):int(len_all * (i + 1) / no_of_partial)])
-                        stock_list = [x for x in stock_list if x[0] != '9']
+                        stock_list = list(df.stock_code[int(len_all * i / no_of_partial):int(len_all * (i + 1) / no_of_partial)])
+                        # stock_list = [x for x in stock_list if x[0] != '9']
                         df_yield_temp = self.cal_yield_by_stock_rebal(stocks=stock_list, bgn=date_buy, duration=duration, rebalance=rebalance,
                                                                  stock_weight=stock_weight)  # duration : month기준
                         df_yield_duration = pd.concat([df_yield_duration, df_yield_temp], axis=1)
@@ -845,7 +922,6 @@ class Finance():
 
     # 테스트트
     def caseStudy(self):
-        # for no in range(len(self.caseName)):
         case = self.caseFactors
         self.dfFinance
         df_yield = self.cal_yield_for_periods(years_list=self.listYears, partial_stocks=case['partial'], stock_weight=self.methodStockWeight,
@@ -856,7 +932,14 @@ class Finance():
                                          momentum_factors=case['mom'], size_factors=case['size'],
                                          volatility_factors=case['vol'], finance=self.dfFinance
                                          )
-        self.dfCaseStudyResult = df_yield
+        self.dfCaseStudyResult = df_yield.copy()
+        self.caseStudyResult['variables'] = {'listYears': self.listYears, 'caseFactors': self.caseFactors, 'methodStockWeight': self.methodStockWeight,
+                                             'noOfStocks':self.noOfStocks, 'noOfPartial':self.noOfPartial,
+                                             'exclusiveStock': self.exclusiveStock, 'tradingLoss': self.tradingLoss,
+                                             'limitOfMarketCapitalization': self.limitOfMarketCapitalization, 'limitOfTradingPrice': self.limitOfTradingPrice,
+                                             'limitOfPBR': self.limitOfPBR, 'limitOfPER': self.limitOfPER, 'limitOfPCR': self.limitOfPCR, 'limitOfPSR': self.limitOfPSR}
+        self.caseStudyResult['result'] = self.dfCaseStudyResult.copy()
+        self.caseStudyResult['log'] = self.logSheets.copy()
         # return self.dictCaseStudy
 
     def applyTraidingStrategy(self, strategy : str, data : pd.DataFrame = pd.DataFrame(), daysForMABuy : int = 20, daysForMASell : int = 10):
@@ -1083,7 +1166,7 @@ class Finance():
     def simple_analyzer(self, data : pd.DataFrame = pd.DataFrame()):
         if len(data) == 0:
             data = self.dfCaseStudyResult
-        analysis_result = pd.DataFrame(columns=data.columns, index=['Total Profit', 'CAGR', 'MDD', 'Std', 'Sharpe_Ratio'])
+        analysis_result = pd.DataFrame(columns=data.columns, index=['Total Profit', 'CAGR', 'MDD', 'Std', 'Sharpe_Ratio','승률[%]'])
         trade_year = len(data) / 252
 
         for col in data.columns:
@@ -1102,7 +1185,20 @@ class Finance():
             risk_free_rate = 0
             sharpe_ratio = (cagr - risk_free_rate) / std
 
-            analysis_result[col] = [total_profit, cagr, mdd, std, sharpe_ratio]
+            countPlus = 0
+            countTrade = 0
+            dateStart = data.index[0]
+            while True:
+                countTrade += 1
+                dateEnd = dateStart + relativedelta(months=1)
+                dateEnd = datetime(dateEnd.year, dateEnd.month, 1) - relativedelta(days=1)
+                if data.loc[dateStart:dateEnd, col].cumprod()[-1] > 1:
+                    countPlus += 1
+                dateStart = dateEnd + relativedelta(days=1)
+                if data.index[-1] < dateStart:
+                    break
+
+            analysis_result[col] = [total_profit, cagr, mdd, std, sharpe_ratio,countPlus/countTrade]
         return analysis_result
 
     def simple_analyzer_yearly(self, data : pd.DataFrame = pd.DataFrame()):
@@ -1115,7 +1211,7 @@ class Finance():
             if "Signal" in str(code):
                 continue
             year_range = range(data.index[0].year, data.index[-1].year + 1)
-            analyze_result = pd.DataFrame(columns=year_range, index=['CAGR', 'MDD', 'Std', 'Sharpe_Ratio'])
+            analyze_result = pd.DataFrame(columns=year_range, index=['CAGR', 'MDD', 'Std', 'Sharpe_Ratio','승률[%]'])
             for year in year_range:
                 data_year = data.loc[datetime(year, 1, 1):datetime(year, 12, 31), [code]]
                 analyze_result[year] = self.simple_analyzer(data_year)[code][1:]
