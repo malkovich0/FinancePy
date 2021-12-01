@@ -77,6 +77,9 @@ class Finance():
             # self.change = pd.DataFrame(self.dictChange)
         with open('Raw_Price/price_all_df.pickle', 'rb') as handle:
             self.close = pickle.load(handle)
+        with open('Raw_Price/tradingCost_all.pickle', 'rb') as handle:
+            self.tradingCost = pickle.load(handle)
+
         with open('Raw_Price/kospi_index.pickle', 'rb') as handle:
             self.kospi_index = pickle.load(handle)
         # with open('Raw_Finance/finance_kospi_modi.pickle', 'rb') as handle:
@@ -91,6 +94,9 @@ class Finance():
             self.finance_latest = pickle.load(handle)
         with open('Raw_Finance/finance_quantking_201809.pickle', 'rb') as handle:
             self.finance_quantking = pickle.load(handle)
+        with open('Raw_Finance/finance_dartapi.pickle', 'rb') as handle:
+            self.finance_dartapi = pickle.load(handle)
+
         self.dfFinance = self.finance
 
     # self.change에 있는 종목명과 일자를 그대로 활용. 12분 예상
@@ -533,22 +539,33 @@ class Finance():
         # Volatility_factos
         if len(volatility_factors) != 0:
             for vol_factor in volatility_factors:
-                if vol_factor == 'Simple':
+                self.tradingCost = pd.DataFrame(self.tradingCost)
+                if vol_factor == "tradingCost":
                     bgn = date_buy - relativedelta(months=6)
                     end = date_buy
-                    change_stocks = self.change[finance_cap.stock_code]
-                    yield_stocks = change_stocks.loc[self.date_str_bar(bgn):self.date_str_bar(end), :]
+                    tradingCost = self.tradingCost[finance_cap.stock_code]
+                    tradingCost = tradingCost.loc[bgn:end, :]
+                    finance_cap['Vol_TradingCost'] = tradingCost.T.std(axis=1).values
+                    finance_cap = finance_cap.dropna(subset=['Vol_TradingCost']).sort_values(by='Vol_TradingCost', ascending=True)
+                    finance_cap['Vol_TradingCost_Score'] = np.arange(1, len(finance_cap.index) + 1) / len(finance_cap.index)
+                    finance_cap['Vol_Score'] = finance_cap['Vol_TradingCost_Score']
 
-                    # print('yield_stocks\n',yield_stocks)
-                    # yield_index = self.kospi_index.loc[self.date_str_bar(bgn):self.date_str_bar(end), ['Change']]
-                    # for stock_code in yield_stocks.columns:
-                    #     yield_stocks[stock_code] = yield_stocks[stock_code] - yield_index['Change']
-                    # print('yield_stocks\n', yield_stocks)
-                    finance_cap['Vol_Simple'] = yield_stocks.T.std(axis=1).values
-                    # print('finance_cap\n',finance_cap)
-                    finance_cap = finance_cap.dropna(subset=['Vol_Simple']).sort_values(by='Vol_Simple', ascending=True)
-                    finance_cap['Vol_Simple_Score'] = np.arange(1, len(finance_cap.index) + 1) / len(finance_cap.index)
-                    finance_cap['Vol_Score'] = finance_cap['Vol_Simple_Score']
+                # if vol_factor == 'Simple':
+                #     bgn = date_buy - relativedelta(months=6)
+                #     end = date_buy
+                #     change_stocks = self.change[finance_cap.stock_code]
+                #     yield_stocks = change_stocks.loc[self.date_str_bar(bgn):self.date_str_bar(end), :]
+                #
+                #     # print('yield_stocks\n',yield_stocks)
+                #     # yield_index = self.kospi_index.loc[self.date_str_bar(bgn):self.date_str_bar(end), ['Change']]
+                #     # for stock_code in yield_stocks.columns:
+                #     #     yield_stocks[stock_code] = yield_stocks[stock_code] - yield_index['Change']
+                #     # print('yield_stocks\n', yield_stocks)
+                #     finance_cap['Vol_Simple'] = yield_stocks.T.std(axis=1).values
+                #     # print('finance_cap\n',finance_cap)
+                #     finance_cap = finance_cap.dropna(subset=['Vol_Simple']).sort_values(by='Vol_Simple', ascending=True)
+                #     finance_cap['Vol_Simple_Score'] = np.arange(1, len(finance_cap.index) + 1) / len(finance_cap.index)
+                #     finance_cap['Vol_Score'] = finance_cap['Vol_Simple_Score']
         else:
             finance_cap['Vol_Score'] = 0
 
@@ -1105,10 +1122,10 @@ class Finance():
         return data
 
     def makeTradePlanByNaverFinance(self,daysForMABuy : int = 30, daysForMASell : int = 20):
-        self.dateBuy = datetime.now()
+        # self.dateBuy = datetime.now()
         print(f"매수일 기준 : {self.dateBuy}\n재무제표 기준 : {self.periodBuy}")
 
-        listStockBuy = self.make_stock_list_by_finance(fs=self.finance_latest, date_buy=self.dateBuy, period=self.periodBuy,
+        listStockBuy = self.make_stock_list_by_finance(fs=self.finance_dartapi, date_buy=self.dateBuy, period=self.periodBuy,
                                                        size_target=self.sizeTarget,
                                                        value_factors=self.caseFactors['val'],
                                                        quality_factors=self.caseFactors['qual'],
@@ -1157,8 +1174,32 @@ class Finance():
         else:
             print(f"지수 이평선 미돌파 ( 가격 : {price}, 이평선 : {maBuy}, 비율 : {(price-maBuy)/maBuy})")
 
+    def outputPortfolioTradeResult(self, dateStart: datetime, dateEnd: datetime, portfolio: dict = {}):
+        import matplotlib.pyplot as plt
+
+        if len(portfolio) == 0:
+            with open(f'/Users/malko/PycharmProjects/xing/TradingPlan/trade_plan_{self.periodBuy}.pickle', 'rb') as handle:
+                print(f'매수기준 재무정보 : {self.periodBuy}')
+                portfolio = pickle.load(handle)
+        print(f'시작일 기준 : {dateStart}\n종료일 기준 : {dateEnd}')
+        dfPortfolioResult = pd.DataFrame(columns=portfolio.keys())
+        totalBuy = 0
+        for stock_code in portfolio.keys():
+            df_stock = stock.get_market_ohlcv_by_date(ticker=stock_code, fromdate=dateStart, todate=dateEnd, adjusted=False)
+            change_temp = df_stock['등락률']
+            priceStart = df_stock.iat[0, 0]
+            totalBuy += priceStart * portfolio[stock_code]['수량']
+            dfPortfolioResult[stock_code] = priceStart * portfolio[stock_code]['수량'] * ((change_temp * 0.01 + 1).cumprod())
+        seriesResult = dfPortfolioResult.sum(axis=1)
+        print(f'시작가 : {totalBuy}\n종가 : {int(seriesResult[-1])} ( {"{:.2%}".format(seriesResult[-1]/totalBuy - 1) } )')
+
+        fig, ax = plt.subplots(2, 1, figsize=(15, 10))
+        ax[0].plot(seriesResult)
+        ax[1].plot(seriesResult / totalBuy)
+        plt.show()
+
     def saveTradePlan(self):
-        with open('/Users/malko/PycharmProjects/xing/TradingPlan/trade_plan_202106.pickle', 'wb') as handle:
+        with open(f'/Users/malko/PycharmProjects/xing/TradingPlan/trade_plan_{self.periodBuy}.pickle', 'wb') as handle:
             pickle.dump(self.dictPortfolioTradePlan, handle, protocol=pickle.HIGHEST_PROTOCOL)
         print("저장 완료")
 
