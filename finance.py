@@ -97,7 +97,7 @@ class Finance():
         with open('Raw_Finance/finance_dartapi.pickle', 'rb') as handle:
             self.finance_dartapi = pickle.load(handle)
 
-        self.dfFinance = self.finance
+        self.dfFinance = self.finance_dartapi
 
     # self.change에 있는 종목명과 일자를 그대로 활용. 12분 예상
     def initializeData(self):
@@ -1158,21 +1158,21 @@ class Finance():
         print("총 매수 예정 금액 : ",totalBuy)
         print(self.dictPortfolioTradePlan)
         # 코스피지수의 이평선
-        bgn = self.dateBuy-relativedelta(days=max(daysForMABuy,daysForMASell)+40)
-        end = self.dateBuy
-        dfChangeKosdaq = self.cal_change_by_kosdaq(bgn=bgn, end=end)
-        movingAverageKosdaqBuy = dfChangeKosdaq['Close'].rolling(daysForMABuy).mean()
-        movingAverageKosdaqSell = dfChangeKosdaq['Close'].rolling(daysForMASell).mean()
-
-        price = dfChangeKosdaq['Close'][-1]
-        maBuy = movingAverageKosdaqBuy[-1]
-        maSell = movingAverageKosdaqSell[-1]
-        print(f"최근 기간의 {daysForMABuy}일 이평선 매수 신호 : {['Y' if priceDay>maDay else 'N' for priceDay, maDay in zip(dfChangeKosdaq['Close'][-15:],movingAverageKosdaqBuy[-15:])]}")
-        print(f"최근 기간의 {daysForMASell}일 이평선 매도 신호 : {['Y' if priceDay > maDay else 'N' for priceDay, maDay in zip(dfChangeKosdaq['Close'][-15:], movingAverageKosdaqSell[-15:])]}")
-        if price > maBuy:  # buy, sell 지표 모두 20일 기준이기때문에 maBuy 만 활용.
-            print(f"지수 {daysForMABuy}일 이평선 돌파 ( 가격 : {price}, 이평선 : {maBuy}, 비율 : {(price-maBuy)/maBuy})")
-        else:
-            print(f"지수 이평선 미돌파 ( 가격 : {price}, 이평선 : {maBuy}, 비율 : {(price-maBuy)/maBuy})")
+        # bgn = self.dateBuy-relativedelta(days=max(daysForMABuy,daysForMASell)+40)
+        # end = self.dateBuy
+        # dfChangeKosdaq = self.cal_change_by_kosdaq(bgn=bgn, end=end)
+        # movingAverageKosdaqBuy = dfChangeKosdaq['Close'].rolling(daysForMABuy).mean()
+        # movingAverageKosdaqSell = dfChangeKosdaq['Close'].rolling(daysForMASell).mean()
+        #
+        # price = dfChangeKosdaq['Close'][-1]
+        # maBuy = movingAverageKosdaqBuy[-1]
+        # maSell = movingAverageKosdaqSell[-1]
+        # print(f"최근 기간의 {daysForMABuy}일 이평선 매수 신호 : {['Y' if priceDay>maDay else 'N' for priceDay, maDay in zip(dfChangeKosdaq['Close'][-15:],movingAverageKosdaqBuy[-15:])]}")
+        # print(f"최근 기간의 {daysForMASell}일 이평선 매도 신호 : {['Y' if priceDay > maDay else 'N' for priceDay, maDay in zip(dfChangeKosdaq['Close'][-15:], movingAverageKosdaqSell[-15:])]}")
+        # if price > maBuy:  # buy, sell 지표 모두 20일 기준이기때문에 maBuy 만 활용.
+        #     print(f"지수 {daysForMABuy}일 이평선 돌파 ( 가격 : {price}, 이평선 : {maBuy}, 비율 : {(price-maBuy)/maBuy})")
+        # else:
+        #     print(f"지수 이평선 미돌파 ( 가격 : {price}, 이평선 : {maBuy}, 비율 : {(price-maBuy)/maBuy})")
 
     def outputPortfolioTradeResult(self, dateStart: datetime, dateEnd: datetime, portfolio: dict = {}):
         import matplotlib.pyplot as plt
